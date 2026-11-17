@@ -1,0 +1,56 @@
+<?php
+/**
+ * LaporFasilitas - Public Entry Point & Router
+ */
+
+require_once dirname(__DIR__) . '/src/bootstrap.php';
+
+use App\Router;
+use App\Controllers\HomeController;
+use App\Controllers\AuthController;
+use App\Controllers\ReportController;
+use App\Controllers\AdminController;
+use App\Controllers\OfficerController;
+use App\Controllers\ChatController;
+
+$router = new Router();
+
+// Public Routes
+$router->get('/', [HomeController::class, 'index']);
+$router->get('/login', [AuthController::class, 'showLogin']);
+$router->post('/login', [AuthController::class, 'processLogin']);
+$router->get('/register', [AuthController::class, 'showRegister']);
+$router->post('/register', [AuthController::class, 'processRegister']);
+$router->get('/logout', [AuthController::class, 'logout']);
+
+// Citizen Routes (Masyarakat)
+$router->get('/laporan', [ReportController::class, 'index']);
+$router->get('/laporan/buat', [ReportController::class, 'create']);
+$router->post('/laporan/simpan', [ReportController::class, 'store']);
+$router->get('/laporan/{id}', [ReportController::class, 'show']);
+
+// Admin Routes
+$router->get('/admin', [AdminController::class, 'dashboard']);
+$router->get('/admin/semua-laporan', [AdminController::class, 'reports']);
+$router->get('/admin/petugas', [AdminController::class, 'officers']);
+$router->get('/admin/pengguna', [AdminController::class, 'users']);
+$router->post('/admin/pengguna/tambah', [AdminController::class, 'storeUser']);
+$router->get('/admin/laporan/{id}', [AdminController::class, 'show']);
+$router->post('/admin/laporan/{id}/verifikasi', [AdminController::class, 'verify']);
+
+// Officer Routes
+$router->get('/petugas', [OfficerController::class, 'dashboard']);
+$router->get('/petugas/tugas', [OfficerController::class, 'tasks']);
+$router->get('/petugas/tugas/{id}', [OfficerController::class, 'show']);
+$router->post('/petugas/tugas/{id}/proses', [OfficerController::class, 'processTask']);
+$router->post('/petugas/tugas/{id}/selesai', [OfficerController::class, 'finishTask']);
+
+// Notification Routes
+$router->post('/notifikasi/read/{id}', [\App\Controllers\NotificationController::class, 'markAsRead']);
+$router->post('/notifikasi/read-all', [\App\Controllers\NotificationController::class, 'markAllAsRead']);
+
+// Chatbot AI Routes (guest boleh FAQ umum; data pribadi butuh login & otorisasi role)
+$router->post('/api/chat', [ChatController::class, 'chat']);
+
+// Run Router
+$router->run();

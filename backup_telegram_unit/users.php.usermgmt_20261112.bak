@@ -1,0 +1,95 @@
+<?php
+use App\Helpers\Security;
+require_once VIEWS_PATH . '/layouts/header.php';
+?>
+
+<div class="flex justify-between items-center mb-4">
+    <div>
+        <h1 class="text-2xl font-bold">Manajemen Pengguna</h1>
+        <p class="text-sm text-muted">Akun petugas dan admin hanya dapat dibuat di halaman ini</p>
+    </div>
+    <div class="flex gap-2">
+        <a href="<?= base_url('/admin') ?>" class="btn btn-secondary"><i class="fa-solid fa-arrow-left"></i> Kembali</a>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header">
+        <h3 class="font-semibold"><i class="fa-solid fa-user-plus"></i> Tambah Pengguna Baru</h3>
+    </div>
+    <form action="<?= base_url('/admin/pengguna/tambah') ?>" method="POST">
+        <?= Security::csrfField() ?>
+        <div class="grid grid-2">
+            <div class="form-group">
+                <label class="form-label" for="name">Nama Lengkap</label>
+                <input type="text" id="name" name="name" class="form-control" placeholder="Nama pengguna" required>
+            </div>
+            <div class="form-group">
+                <label class="form-label" for="email">Alamat Email</label>
+                <input type="email" id="email" name="email" class="form-control" placeholder="nama@email.com" required>
+            </div>
+            <div class="form-group">
+                <label class="form-label" for="password">Kata Sandi</label>
+                <input type="password" id="password" name="password" class="form-control" placeholder="Min. 6 karakter" required>
+            </div>
+            <div class="form-group">
+                <label class="form-label" for="role">Role</label>
+                <select id="role" name="role" class="form-control" required>
+                    <option value="petugas">Petugas</option>
+                    <option value="admin">Admin</option>
+                    <option value="masyarakat">Masyarakat</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label class="form-label" for="phone">Telepon (wajib untuk Petugas)</label>
+                <input type="text" id="phone" name="phone" class="form-control" placeholder="081234567890">
+            </div>
+            <div class="form-group">
+                <label class="form-label" for="service_area">Area Layanan (wajib untuk Petugas)</label>
+                <input type="text" id="service_area" name="service_area" class="form-control" placeholder="Contoh: Jakarta Pusat">
+            </div>
+        </div>
+        <button type="submit" class="btn btn-primary"><i class="fa-solid fa-plus"></i> Buat Akun</button>
+    </form>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h3 class="font-semibold"><i class="fa-solid fa-users"></i> Daftar Pengguna (<?= count($users ?? []) ?>)</h3>
+    </div>
+    <?php if (!empty($users)): ?>
+        <div style="overflow-x: auto;">
+            <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 0.875rem;">
+                <thead>
+                    <tr style="border-bottom: 2px solid var(--border-color); color: var(--text-muted);">
+                        <th style="padding: 0.75rem 0.5rem;">Nama & Email</th>
+                        <th style="padding: 0.75rem 0.5rem;">Role</th>
+                        <th style="padding: 0.75rem 0.5rem;">Terdaftar</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php foreach ($users as $u): ?>
+                        <tr style="border-bottom: 1px solid var(--border-color);">
+                            <td style="padding: 0.75rem 0.5rem;">
+                                <div class="font-semibold text-base"><?= htmlspecialchars($u['name']) ?></div>
+                                <div class="text-xs text-muted"><i class="fa-solid fa-envelope"></i> <?= htmlspecialchars($u['email']) ?></div>
+                            </td>
+                            <td style="padding: 0.75rem 0.5rem;">
+                                <span class="badge badge-verified"><?= htmlspecialchars($u['role']) ?></span>
+                            </td>
+                            <td style="padding: 0.75rem 0.5rem;" class="text-xs text-muted">
+                                <?= htmlspecialchars($u['created_at'] ?? '-') ?>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
+    <?php else: ?>
+        <div class="text-center" style="padding: 2.5rem 1rem;">
+            <p class="text-muted">Belum ada data pengguna.</p>
+        </div>
+    <?php endif; ?>
+</div>
+
+<?php require_once VIEWS_PATH . '/layouts/footer.php'; ?>

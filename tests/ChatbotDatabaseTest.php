@@ -1,0 +1,244 @@
+<?php
+/**
+ * Automated Tests: Chatbot AI Database Integration
+ * Run via: c:\xampp\php\php.exe tests/run_all_tests.php
+ */
+
+require_once dirname(__DIR__) . '/src/bootstrap.php';
+
+use App\Config\Database;
+use App\Services\ChatbotService;
+
+echo "\n======================================================\n";
+echo " 🤖 RUNNING CHATBOT DATABASE ACCESS & UNDERSTANDING TEST SUITE\n";
+echo "======================================================\n\n";
+
+$passed = 0;
+$failed = 0;
+
+function assertTest(bool $condition, string $message, &$passed, &$failed) {
+    if ($condition) {
+        echo "  ✅ [PASS] $message\n";
+        $passed++;
+    } else {
+        echo "  ❌ [FAIL] $message\n";
+        $failed++;
+    }
+}
+
+$bot = new ChatbotService();
+$db = Database::getConnection();
+
+// [1] Testing Database Context Compilation
+echo "[1] Testing Database Context Compilation...\n";
+$context = $bot->buildDatabaseContext(['role' => 'admin', 'id' => 1, 'name' => 'Administrator Utama'], 'berapa total laporan?');
+
+assertTest(str_contains($context, 'Total Seluruh Laporan di Database:'), "Context contains total reports metric", $passed, $failed);
+assertTest(str_contains($context, 'Distribusi Status:'), "Context contains status distribution", $passed, $failed);
+assertTest(str_contains($context, 'Distribusi Kategori Fasilitas:'), "Context contains category distribution", $passed, $failed);
+assertTest(str_contains($context, 'Daftar Petugas Lapangan Terdaftar'), "Context contains officers data", $passed, $failed);
+
+// [2] Testing Specific Report Deep Context Lookup
+echo "\n[2] Testing Specific Report Deep Context Lookup (#1)...\n";
+$contextReport1 = $bot->buildDatabaseContext(['role' => 'masyarakat', 'id' => 4, 'name' => 'Siti Rahmawati'], 'bagaimana status laporan #1?');
+
+assertTest(str_contains($contextReport1, 'LPF-00001'), "Context detects and includes LPF-00001", $passed, $failed);
+assertTest(str_contains($contextReport1, 'Lubang Aspal Menganga'), "Context includes report #1 title", $passed, $failed);
+assertTest(str_contains($contextReport1, 'Budi Pratama'), "Context includes assigned officer name", $passed, $failed);
+assertTest(str_contains($contextReport1, 'Bukti Penyelesaian Perbaikan'), "Context includes repair proof section", $passed, $failed);
+
+// [3] Testing Direct Database Fallback Engine
+echo "\n[3] Testing Direct Database Fallback Engine...\n";
+$statsAnswer = $bot->answerDirectFromDatabase('berapa total laporan yang ada?', null);
+assertTest(str_contains($statsAnswer, 'Berdasarkan data real-time database'), "Direct DB answer returns statistics", $passed, $failed);
+assertTest(str_contains($statsAnswer, 'total seluruh laporan'), "Direct DB answer displays total count", $passed, $failed);
+
+$officerGuest = $bot->answerDirectFromDatabase('siapa saja petugas lapangan?', null);
+assertTest(str_contains($officerGuest, 'Silakan login'), "Guest diminta login untuk daftar petugas", $passed, $failed);
+$officerAdmin = $bot->answerDirectFromDatabase('siapa saja petugas lapangan?', ['role' => 'admin', 'id' => 1, 'name' => 'Administrator Utama']);
+assertTest(str_contains($officerAdmin, 'Daftar petugas lapangan terdaftar'), "Direct DB answer lists officers (admin)", $passed, $failed);
+assertTest(str_contains($officerAdmin, 'Budi Pratama'), "Direct DB answer mentions officer Budi", $passed, $failed);
+
+$reportGuest = $bot->answerDirectFromDatabase('cek laporan #1', null);
+assertTest(str_contains($reportGuest, 'Silakan login'), "Guest diminta login untuk detail laporan", $passed, $failed);
+$reportOwner = $bot->answerDirectFromDatabase('cek laporan #1', ['role' => 'masyarakat', 'id' => 4, 'name' => 'Siti Rahmawati']);
+assertTest(str_contains($reportOwner, 'LPF-00001'), "Direct DB answer identifies report #1 (owner)", $passed, $failed);
+assertTest(str_contains($reportOwner, 'Selesai'), "Direct DB answer identifies status Selesai", $passed, $failed);
+$reportOther = $bot->answerDirectFromDatabase('cek laporan #1', ['role' => 'masyarakat', 'id' => 5, 'name' => 'Bambang Kusuma']);
+assertTest(str_contains($reportOther, 'tidak ditemukan'), "Masyarakat tidak bisa akses laporan milik user lain", $passed, $failed);
+
+$userCountGuest = $bot->answerDirectFromDatabase('berapa jumlah pengguna yang ada di aplikasi ini?', null);
+assertTest(str_contains($userCountGuest, 'Silakan login'), "Guest diminta login untuk statistik pengguna", $passed, $failed);
+$userCountBlocked = $bot->answerDirectFromDatabase('berapa jumlah pengguna yang ada di aplikasi ini?', ['role' => 'masyarakat', 'id' => 4, 'name' => 'Siti Rahmawati']);
+assertTest(str_contains($userCountBlocked, 'hanya dapat diakses oleh admin'), "Masyarakat ditolak untuk statistik pengguna (privasi)", $passed, $failed);
+$userCountAdmin = $bot->answerDirectFromDatabase('berapa jumlah pengguna yang ada di aplikasi ini?', ['role' => 'admin', 'id' => 1, 'name' => 'Administrator Utama']);
+assertTest(str_contains($userCountAdmin, 'total pengguna yang terdaftar'), "Direct DB answer counts users (admin)", $passed, $failed);
+assertTest(str_contains($userCountAdmin, 'Rincian per role'), "Direct DB answer breaks down users per role (admin)", $passed, $failed);
+$reportCountStillWorks = $bot->answerDirectFromDatabase('berapa banyak jumlah laporan yang sudah masuk?', null);
+assertTest(str_contains($reportCountStillWorks, 'total seluruh laporan'), "Report statistics still answered (not hijacked by user branch)", $passed, $failed);
+
+// [4] Testing Operational FAQs
+echo "\n[4] Testing Operational FAQs...\n";
+$faqHowTo = $bot->answerFAQ('bagaimana cara membuat laporan?');
+assertTest($faqHowTo !== null && str_contains($faqHowTo, 'Buat Laporan'), "FAQ accurately explains report creation", $passed, $failed);
+
+$faqStatus = $bot->answerFAQ('apa arti status laporan?');
+assertTest($faqStatus !== null && str_contains($faqStatus, 'Menunggu Verifikasi'), "FAQ accurately explains status definitions", $passed, $failed);
+
+// [5] Testing Enhanced Citizen Contextual Understanding & Guidance
+echo "\n[5] Testing Enhanced Citizen Contextual Understanding & Guidance...\n";
+$targetQ = $bot->answerFAQ('Bagaimana cara saya membuat laporan?', ['role' => 'masyarakat', 'id' => 4, 'name' => 'Siti']);
+assertTest($targetQ !== null, "Target question 'Bagaimana cara saya membuat laporan?' is recognized", $passed, $failed);
+assertTest(str_contains($targetQ, 'Buat Laporan'), "Target answer mentions menu 'Buat Laporan'", $passed, $failed);
+assertTest(str_contains($targetQ, 'Laporan Saya'), "Target answer explains monitoring in 'Laporan Saya'", $passed, $failed);
+assertTest(str_contains($targetQ, 'Kategori Fasilitas'), "Target answer guides category selection", $passed, $failed);
+assertTest(str_contains($targetQ, 'Kirim Laporan Sekarang'), "Target answer mentions submit button", $passed, $failed);
+assertTest(!str_contains($targetQ, 'Saya telah membaca database LaporFasilitas'), "Target answer does NOT contain robotic prefix", $passed, $failed);
+
+// Direct DB fallback also handles the target question
+$targetDbAns = $bot->answerDirectFromDatabase('Bagaimana cara saya membuat laporan?', ['role' => 'masyarakat', 'id' => 4, 'name' => 'Siti']);
+assertTest(str_contains($targetDbAns, 'Buat Laporan'), "Direct DB engine directly answers target question with guide", $passed, $failed);
+
+// Check Status question
+$statusGuide = $bot->answerFAQ('Bagaimana cara melihat status laporan?');
+assertTest($statusGuide !== null && str_contains($statusGuide, 'Laporan Saya'), "Status guide directs citizen to 'Laporan Saya'", $passed, $failed);
+assertTest(str_contains($statusGuide, 'Lihat Detail'), "Status guide explains 'Lihat Detail' button", $passed, $failed);
+
+// Categories question
+$catGuide = $bot->answerFAQ('Apa saja fasilitas yang bisa dilaporkan?');
+assertTest($catGuide !== null && str_contains($catGuide, 'Jalan') && str_contains($catGuide, 'Lampu Jalan') && str_contains($catGuide, 'Saluran Air'), "Categories guide lists official app categories", $passed, $failed);
+
+// App Usage question
+$usageGuide = $bot->answerFAQ('Bagaimana cara menggunakan aplikasi ini?');
+assertTest($usageGuide !== null && str_contains($usageGuide, 'LaporFasilitas'), "App usage guide explains platform", $passed, $failed);
+
+// Personal reports inquiry
+$myReports = $bot->answerFAQ('Tampilkan laporan saya', ['role' => 'masyarakat', 'id' => 4, 'name' => 'Siti']);
+assertTest($myReports !== null && (str_contains($myReports, 'LPF-') || str_contains($myReports, 'daftar laporan')), "My reports inquiry fetches citizen report records", $passed, $failed);
+
+// Out of scope inquiry
+$outScope = $bot->answerFAQ('Resep nasi goreng enak');
+assertTest($outScope !== null && str_contains($outScope, 'khusus LaporFasilitas'), "Out of scope question is politely redirected", $passed, $failed);
+
+// General fallback greeting
+$generalGreeting = $bot->answerDirectFromDatabase('Halo selamat siang', ['role' => 'masyarakat', 'id' => 4, 'name' => 'Siti']);
+assertTest(!str_contains($generalGreeting, 'Saya telah membaca database LaporFasilitas'), "General fallback does not have robotic prefix", $passed, $failed);
+assertTest(str_contains($generalGreeting, 'Panduan cara membuat laporan'), "General fallback offers helpful navigation options", $passed, $failed);
+
+// [6] Testing User Personalization & Identity Understanding
+echo "\n[6] Testing User Personalization & Identity Understanding...\n";
+$identSiti = $bot->answerFAQ('Siapakah saya?', ['role' => 'masyarakat', 'id' => 4, 'name' => 'Siti Rahmawati']);
+assertTest(str_contains($identSiti, 'Halo, Siti Rahmawati!'), "Masyarakat recognizes logged-in name 'Siti Rahmawati'", $passed, $failed);
+assertTest(str_contains($identSiti, 'akun masyarakat'), "Masyarakat identifies user role 'masyarakat'", $passed, $failed);
+
+$nameSiti = $bot->answerFAQ('Siapa nama saya?', ['role' => 'masyarakat', 'id' => 4, 'name' => 'Siti Rahmawati']);
+assertTest(str_contains($nameSiti, 'Siti Rahmawati'), "Answers user name accurately", $passed, $failed);
+
+$emailSiti = $bot->answerFAQ('Apa email akun saya?', ['role' => 'masyarakat', 'id' => 4, 'name' => 'Siti Rahmawati']);
+assertTest(str_contains($emailSiti, 'warga@laporfasilitas.id'), "Answers user email accurately", $passed, $failed);
+
+$roleSiti = $bot->answerFAQ('Apa role akun saya?', ['role' => 'masyarakat', 'id' => 4, 'name' => 'Siti Rahmawati']);
+assertTest(str_contains($roleSiti, 'Masyarakat'), "Explains user role access", $passed, $failed);
+
+$identOfficer = $bot->answerFAQ('Siapakah saya?', ['role' => 'petugas', 'id' => 3, 'name' => 'Agus Setiawan']);
+assertTest(str_contains($identOfficer, 'Agus Setiawan') && str_contains($identOfficer, 'Petugas'), "Petugas identifies logged-in officer name & role", $passed, $failed);
+
+$identAdmin = $bot->answerFAQ('Siapakah saya?', ['role' => 'admin', 'id' => 1, 'name' => 'febrian']);
+assertTest((str_contains($identAdmin, 'Halo, febrian!') || str_contains($identAdmin, 'Administrator Utama')) && str_contains($identAdmin, 'Administrator'), "Admin identifies logged-in admin name & role", $passed, $failed);
+
+$identGuest = $bot->answerFAQ('Siapakah saya?', null);
+assertTest(str_contains($identGuest, 'belum login') || str_contains($identGuest, 'Tamu'), "Guest is informed to login first", $passed, $failed);
+
+// [7] Testing Role Data Boundaries & Strict Privacy
+echo "\n[7] Testing Role Data Boundaries & Strict Privacy...\n";
+$otherReq = $bot->answerFAQ('Tampilkan laporan milik pengguna lain', ['role' => 'masyarakat', 'id' => 4, 'name' => 'Siti Rahmawati']);
+assertTest(str_contains($otherReq, 'menjaga privasi') && str_contains($otherReq, 'tidak memiliki izin'), "Masyarakat cannot view other users' reports request", $passed, $failed);
+
+$otherRep3 = $bot->answerFAQ('cek laporan #3', ['role' => 'masyarakat', 'id' => 4, 'name' => 'Siti Rahmawati']);
+assertTest(str_contains($otherRep3, 'tidak memiliki izin') || str_contains($otherRep3, 'tidak ditemukan'), "Masyarakat cannot access specific report of other user", $passed, $failed);
+
+// [8] Testing Real-time Database Facts & Role-based Insights
+echo "\n[8] Testing Real-time Database Facts & Role-based Insights...\n";
+$countSiti = $bot->answerFAQ('Berapa laporan yang sudah saya buat?', ['role' => 'masyarakat', 'id' => 4, 'name' => 'Siti Rahmawati']);
+assertTest(str_contains($countSiti, 'laporan fasilitas di LaporFasilitas') && str_contains($countSiti, 'Rincian status'), "Counts exact reports created by Siti", $passed, $failed);
+assertTest(str_contains($countSiti, 'Selesai: 1'), "Report count includes breakdown of status Selesai", $passed, $failed);
+
+$statusSiti = $bot->answerFAQ('Bagaimana status laporan saya?', ['role' => 'masyarakat', 'id' => 4, 'name' => 'Siti Rahmawati']);
+assertTest(str_contains($statusSiti, 'LPF-') && (str_contains($statusSiti, 'Ditugaskan') || str_contains($statusSiti, 'Ditolak')), "Status reports lists citizen's reports accurately", $passed, $failed);
+
+$offHandling = $bot->answerFAQ('Siapa petugas yang menangani laporan saya?', ['role' => 'masyarakat', 'id' => 4, 'name' => 'Siti Rahmawati']);
+assertTest(str_contains($offHandling, 'Agus Setiawan') || str_contains($offHandling, 'Budi Pratama'), "Shows assigned officer for citizen's reports", $passed, $failed);
+
+$lastUpd = $bot->answerFAQ('Kapan laporan saya terakhir diperbarui?', ['role' => 'masyarakat', 'id' => 4, 'name' => 'Siti Rahmawati']);
+assertTest(str_contains($lastUpd, 'LPF-') && str_contains($lastUpd, 'terakhir diperbarui'), "Identifies last updated report of citizen", $passed, $failed);
+
+$topCatAns = $bot->answerFAQ('Kategori fasilitas apa yang paling banyak dilaporkan?');
+assertTest(str_contains($topCatAns, 'paling banyak dilaporkan') && str_contains($topCatAns, 'Jalan & Trotoar'), "Identifies top reported category from database", $passed, $failed);
+
+$catBreakAns = $bot->answerFAQ('Berapa jumlah laporan berdasarkan kategori?');
+assertTest(str_contains($catBreakAns, 'berdasarkan kategori') && str_contains($catBreakAns, 'Jalan & Trotoar'), "Provides category breakdown from database", $passed, $failed);
+
+// [9] Testing Petugas & Admin Operations
+echo "\n[9] Testing Petugas & Admin Operations...\n";
+$petugasTasks = $bot->answerFAQ('Apa saja tugas saya?', ['role' => 'petugas', 'id' => 3, 'name' => 'Agus Setiawan']);
+assertTest(str_contains($petugasTasks, 'LPF-00084') && str_contains($petugasTasks, 'jalan berlubang di sudirman'), "Petugas sees assigned tasks", $passed, $failed);
+
+$petugasReporter = $bot->answerFAQ('Siapa pelapor laporan yang saya tangani?', ['role' => 'petugas', 'id' => 3, 'name' => 'Agus Setiawan']);
+assertTest(str_contains($petugasReporter, 'Siti Rahmawati'), "Petugas sees reporter info for assigned task", $passed, $failed);
+
+$adminTotal = $bot->answerFAQ('Berapa total laporan di sistem?', ['role' => 'admin', 'id' => 1, 'name' => 'febrian']);
+assertTest(str_contains($adminTotal, 'total seluruh laporan yang masuk saat ini adalah'), "Admin gets accurate total report count", $passed, $failed);
+
+$adminWaiting = $bot->answerFAQ('Berapa laporan yang menunggu verifikasi?', ['role' => 'admin', 'id' => 1, 'name' => 'febrian']);
+assertTest(str_contains($adminWaiting, '1 laporan'), "Admin gets accurate count of reports waiting verification", $passed, $failed);
+
+$adminOfficers = $bot->answerFAQ('Siapa saja petugas yang tersedia?', ['role' => 'admin', 'id' => 1, 'name' => 'febrian']);
+assertTest(str_contains($adminOfficers, 'Budi Pratama') && str_contains($adminOfficers, 'Agus Setiawan'), "Admin gets full list of available officers", $passed, $failed);
+
+// [10] Testing Admin User Management Inquiries (Nama, Role, Status Akun)
+echo "\n[10] Testing Admin User Management Inquiries (Nama, Role, Status Akun)...\n";
+$adminUser = ['role' => 'admin', 'id' => 1, 'name' => 'febrian'];
+$citizenUser = ['role' => 'masyarakat', 'id' => 4, 'name' => 'Siti Rahmawati'];
+
+// 1. Berapa jumlah anggota? (Admin)
+$ansCount = $bot->answerFAQ('Berapa jumlah anggota?', $adminUser);
+assertTest(str_contains($ansCount, 'total pengguna yang terdaftar di aplikasi ini adalah 8 pengguna'), "Admin: menghitung total 8 pengguna", $passed, $failed);
+assertTest(str_contains($ansCount, '5 masyarakat, 1 admin, 2 petugas'), "Admin: rincian role akurat", $passed, $failed);
+assertTest(str_contains($ansCount, 'Akun Aktif: 8 pengguna'), "Admin: rincian status akun aktif", $passed, $failed);
+assertTest(str_contains($ansCount, 'febrian') && str_contains($ansCount, 'Siti Rahmawati') && str_contains($ansCount, 'Budi Pratama'), "Admin: menampilkan daftar nama pengguna sebenarnya", $passed, $failed);
+
+// 2. Siapa saja anggota yang terdaftar? (Admin)
+$ansMembers = $bot->answerFAQ('Siapa saja anggota yang terdaftar?', $adminUser);
+assertTest(str_contains($ansMembers, 'Daftar nama pengguna:'), "Admin: menampilkan header daftar nama pengguna", $passed, $failed);
+assertTest(str_contains($ansMembers, 'Role: Admin') && str_contains($ansMembers, 'Role: Petugas') && str_contains($ansMembers, 'Role: Masyarakat'), "Admin: menampilkan role setiap pengguna", $passed, $failed);
+
+// 3. Siapa saja pengguna dengan role masyarakat? (Admin)
+$ansMasyarakat = $bot->answerFAQ('Siapa saja pengguna dengan role masyarakat?', $adminUser);
+assertTest(str_contains($ansMasyarakat, 'terdapat 5 pengguna dengan role Masyarakat'), "Admin: jumlah masyarakat akurat", $passed, $failed);
+assertTest(str_contains($ansMasyarakat, 'Siti Rahmawati') && str_contains($ansMasyarakat, 'Bambang Kusuma'), "Admin: menampilkan nama-nama masyarakat", $passed, $failed);
+
+// 4. Siapa saja petugas? (Admin)
+$ansPetugas = $bot->answerFAQ('Siapa saja petugas?', $adminUser);
+assertTest(str_contains($ansPetugas, 'Budi Pratama') && str_contains($ansPetugas, 'Agus Setiawan'), "Admin: menampilkan nama-nama petugas", $passed, $failed);
+assertTest(str_contains($ansPetugas, 'Role: Petugas') && str_contains($ansPetugas, 'Status: Aktif'), "Admin: menampilkan role dan status petugas", $passed, $failed);
+
+// 5. Siapa admin aplikasi? (Admin)
+$ansAdmin = $bot->answerFAQ('Siapa admin aplikasi?', $adminUser);
+assertTest(str_contains($ansAdmin, 'terdapat 1 pengguna dengan role Administrator'), "Admin: jumlah administrator akurat", $passed, $failed);
+assertTest(str_contains($ansAdmin, 'febrian'), "Admin: menampilkan nama administrator", $passed, $failed);
+
+// 6. Batasan Role Masyarakat (Ditolak)
+$ansBlockedWarga = $bot->answerFAQ('Berapa jumlah anggota?', $citizenUser);
+assertTest(str_contains($ansBlockedWarga, 'hanya dapat diakses oleh admin'), "Masyarakat: akses data pengguna ditolak demi privasi", $passed, $failed);
+
+// 7. Batasan Tamu (Diminta Login)
+$ansGuest = $bot->answerFAQ('Siapa saja anggota yang terdaftar?', null);
+assertTest(str_contains($ansGuest, 'Silakan login terlebih dahulu'), "Tamu: diminta login terlebih dahulu", $passed, $failed);
+
+echo "\n======================================================\n";
+echo " 📊 TEST RESULTS: $passed PASSED, $failed FAILED\n";
+echo "======================================================\n";
+
+if ($failed > 0) {
+    exit(1);
+}

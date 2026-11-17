@@ -1,0 +1,94 @@
+<?php
+/**
+ * Automated Tests: Chatbot AI Database Integration
+ * Run via: c:\xampp\php\php.exe tests/run_all_tests.php
+ */
+
+require_once dirname(__DIR__) . '/src/bootstrap.php';
+
+use App\Config\Database;
+use App\Services\ChatbotService;
+
+echo "\n======================================================\n";
+echo " 🤖 RUNNING CHATBOT DATABASE ACCESS & UNDERSTANDING TEST SUITE\n";
+echo "======================================================\n\n";
+
+$passed = 0;
+$failed = 0;
+
+function assertTest(bool $condition, string $message, &$passed, &$failed) {
+    if ($condition) {
+        echo "  ✅ [PASS] $message\n";
+        $passed++;
+    } else {
+        echo "  ❌ [FAIL] $message\n";
+        $failed++;
+    }
+}
+
+$bot = new ChatbotService();
+$db = Database::getConnection();
+
+// [1] Testing Database Context Compilation
+echo "[1] Testing Database Context Compilation...\n";
+$context = $bot->buildDatabaseContext(['role' => 'admin', 'id' => 1, 'name' => 'Administrator Utama'], 'berapa total laporan?');
+
+assertTest(str_contains($context, 'Total Seluruh Laporan di Database:'), "Context contains total reports metric", $passed, $failed);
+assertTest(str_contains($context, 'Distribusi Status:'), "Context contains status distribution", $passed, $failed);
+assertTest(str_contains($context, 'Distribusi Kategori Fasilitas:'), "Context contains category distribution", $passed, $failed);
+assertTest(str_contains($context, 'Daftar Petugas Lapangan Terdaftar'), "Context contains officers data", $passed, $failed);
+
+// [2] Testing Specific Report Deep Context Lookup
+echo "\n[2] Testing Specific Report Deep Context Lookup (#1)...\n";
+$contextReport1 = $bot->buildDatabaseContext(['role' => 'masyarakat', 'id' => 4, 'name' => 'Siti Rahmawati'], 'bagaimana status laporan #1?');
+
+assertTest(str_contains($contextReport1, 'LPF-00001'), "Context detects and includes LPF-00001", $passed, $failed);
+assertTest(str_contains($contextReport1, 'Lubang Aspal Menganga'), "Context includes report #1 title", $passed, $failed);
+assertTest(str_contains($contextReport1, 'Budi Pratama'), "Context includes assigned officer name", $passed, $failed);
+assertTest(str_contains($contextReport1, 'Bukti Penyelesaian Perbaikan'), "Context includes repair proof section", $passed, $failed);
+
+// [3] Testing Direct Database Fallback Engine
+echo "\n[3] Testing Direct Database Fallback Engine...\n";
+$statsAnswer = $bot->answerDirectFromDatabase('berapa total laporan yang ada?', null);
+assertTest(str_contains($statsAnswer, 'Berdasarkan data real-time database'), "Direct DB answer returns statistics", $passed, $failed);
+assertTest(str_contains($statsAnswer, 'total seluruh laporan'), "Direct DB answer displays total count", $passed, $failed);
+
+$officerGuest = $bot->answerDirectFromDatabase('siapa saja petugas lapangan?', null);
+assertTest(str_contains($officerGuest, 'Silakan login'), "Guest diminta login untuk daftar petugas", $passed, $failed);
+$officerAdmin = $bot->answerDirectFromDatabase('siapa saja petugas lapangan?', ['role' => 'admin', 'id' => 1, 'name' => 'Administrator Utama']);
+assertTest(str_contains($officerAdmin, 'Daftar petugas lapangan terdaftar'), "Direct DB answer lists officers (admin)", $passed, $failed);
+assertTest(str_contains($officerAdmin, 'Budi Pratama'), "Direct DB answer mentions officer Budi", $passed, $failed);
+
+$reportGuest = $bot->answerDirectFromDatabase('cek laporan #1', null);
+assertTest(str_contains($reportGuest, 'Silakan login'), "Guest diminta login untuk detail laporan", $passed, $failed);
+$reportOwner = $bot->answerDirectFromDatabase('cek laporan #1', ['role' => 'masyarakat', 'id' => 4, 'name' => 'Siti Rahmawati']);
+assertTest(str_contains($reportOwner, 'LPF-00001'), "Direct DB answer identifies report #1 (owner)", $passed, $failed);
+assertTest(str_contains($reportOwner, 'Selesai'), "Direct DB answer identifies status Selesai", $passed, $failed);
+$reportOther = $bot->answerDirectFromDatabase('cek laporan #1', ['role' => 'masyarakat', 'id' => 5, 'name' => 'Bambang Kusuma']);
+assertTest(str_contains($reportOther, 'tidak ditemukan'), "Masyarakat tidak bisa akses laporan milik user lain", $passed, $failed);
+
+$userCountGuest = $bot->answerDirectFromDatabase('berapa jumlah pengguna yang ada di aplikasi ini?', null);
+assertTest(str_contains($userCountGuest, 'Silakan login'), "Guest diminta login untuk statistik pengguna", $passed, $failed);
+$userCountBlocked = $bot->answerDirectFromDatabase('berapa jumlah pengguna yang ada di aplikasi ini?', ['role' => 'masyarakat', 'id' => 4, 'name' => 'Siti Rahmawati']);
+assertTest(str_contains($userCountBlocked, 'hanya dapat diakses oleh admin'), "Masyarakat ditolak untuk statistik pengguna (privasi)", $passed, $failed);
+$userCountAdmin = $bot->answerDirectFromDatabase('berapa jumlah pengguna yang ada di aplikasi ini?', ['role' => 'admin', 'id' => 1, 'name' => 'Administrator Utama']);
+assertTest(str_contains($userCountAdmin, 'total pengguna yang terdaftar'), "Direct DB answer counts users (admin)", $passed, $failed);
+assertTest(str_contains($userCountAdmin, 'Rincian per role'), "Direct DB answer breaks down users per role (admin)", $passed, $failed);
+$reportCountStillWorks = $bot->answerDirectFromDatabase('berapa banyak jumlah laporan yang sudah masuk?', null);
+assertTest(str_contains($reportCountStillWorks, 'total seluruh laporan'), "Report statistics still answered (not hijacked by user branch)", $passed, $failed);
+
+// [4] Testing Operational FAQs
+echo "\n[4] Testing Operational FAQs...\n";
+$faqHowTo = $bot->answerFAQ('bagaimana cara membuat laporan?');
+assertTest($faqHowTo !== null && str_contains($faqHowTo, 'Buat Laporan'), "FAQ accurately explains report creation", $passed, $failed);
+
+$faqStatus = $bot->answerFAQ('apa arti status laporan?');
+assertTest($faqStatus !== null && str_contains($faqStatus, 'Menunggu Verifikasi'), "FAQ accurately explains status definitions", $passed, $failed);
+
+echo "\n======================================================\n";
+echo " 📊 TEST RESULTS: $passed PASSED, $failed FAILED\n";
+echo "======================================================\n";
+
+if ($failed > 0) {
+    exit(1);
+}

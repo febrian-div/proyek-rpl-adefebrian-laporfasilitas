@@ -1,0 +1,254 @@
+<?php
+namespace App\Controllers;
+
+use App\Helpers\Response;
+use App\Helpers\Security;
+use App\Middleware\AuthMiddleware;
+use App\Models\Officer;
+use App\Models\Assignment;
+use App\Models\Report;
+use App\Models\ReportTimeline;
+use App\Models\RepairProof;
+use App\Models\Notification;
+use App\Services\UploadService;
+
+class OfficerController {
+    
+    private function getOfficerInfo(): array {
+        $user = AuthMiddleware::user();
+        $officer = Officer::findByUserId((int)$user['id']);
+        if (!$officer) {
+            echo "Akses ditolak: Anda bukan petugas terdaftar.";
+            exit;
+        }
+        return [$user, $officer];
+    }
+
+    /**
+     * Officer task dashboard
+     */
+    public function dashboard(): void {
+        AuthMiddleware::requireRole('petugas');
+        list($user, $officer) = $this->getOfficerInfo();
+        
+        $tasks = Officer::assignedReports((int)$officer['id']);
+        
+        $stats = [
+            'total' => count($tasks),
+            'baru' => 0,
+            'proses' => 0,
+            'selesai' => 0
+        ];
+
+        foreach ($tasks as $t) {
+            if ($t['assignment_status'] === 'Ditugaskan') {
+                $stats['baru']++;
+            } elseif ($t['assignment_status'] === 'Sedang Dikerjakan') {
+                $stats['proses']++;
+            } elseif ($t['assignment_status'] === 'Selesai') {
+                $stats['selesai']++;
+            }
+        }
+
+        // Ambil tugas terbaru (limit 5)
+        $recentTasks = array_slice($tasks, 0, 5);
+
+        view('officer.dashboard', [
+            'title' => 'Dashboard Petugas - LaporFasilitas',
+            'user' => $user,
+            'officer' => $officer,
+            'stats' => $stats,
+            'recentTasks' => $recentTasks,
+        ]);
+    }
+
+    /**
+     * Halaman Tugas Saya
+     */
+    public function tasks(): void {
+        AuthMiddleware::requireRole('petugas');
+        list($user, $officer) = $this->getOfficerInfo();
+        
+        $tasks = Officer::assignedReports((int)$officer['id']);
+        
+        // Filter by status if query string exists
+        $statusFilter = trim($_GET['status'] ?? '');
+        if (!empty($statusFilter)) {
+            $tasks = array_filter($tasks, function($t) use ($statusFilter) {
+                if ($statusFilter === 'baru') return $t['assignment_status'] === 'Ditugaskan';
+                if ($statusFilter === 'proses') return $t['assignment_status'] === 'Sedang Dikerjakan';
+                if ($statusFilter === 'selesai') return $t['assignment_status'] === 'Selesai';
+                return true;
+            });
+        }
+
+        view('officer.tasks', [
+            'title' => 'Tugas Saya - LaporFasilitas',
+            'user' => $user,
+            'officer' => $officer,
+            'tasks' => $tasks,
+            'currentFilter' => $statusFilter
+        ]);
+    }
+
+    /**
+     * Detail Tugas
+     */
+    public function show(int $id): void {
+        AuthMiddleware::requireRole('petugas');
+        list($user, $officer) = $this->getOfficerInfo();
+        
+        $report = Report::findById($id);
+        if (!$report) {
+            Response::redirect('/petugas/tugas');
+        }
+
+        // Pastikan laporan ini di-assign ke petugas ini
+        $assignments = Assignment::getByReport($id);
+        $isAssigned = false;
+        $currentAssignment = null;
+        foreach ($assignments as $a) {
+            if ($a['officer_id'] == $officer['id']) {
+                $isAssigned = true;
+                $currentAssignment = $a;
+                break;
+            }
+        }
+
+        if (!$isAssigned) {
+            echo "Akses ditolak: Laporan ini tidak ditugaskan kepada Anda.";
+            exit;
+        }
+
+        view('officer.detail', [
+            'title' => 'Detail Tugas - LaporFasilitas',
+            'user' => $user,
+            'officer' => $officer,
+            'report' => $report,
+            'assignment' => $currentAssignment
+        ]);
+    }
+
+    /**
+     * Terima Tugas & Mulai Dikerjakan
+     */
+    public function processTask(int $id): void {
+        AuthMiddleware::requireRole('petugas');
+        list($user, $officer) = $this->getOfficerInfo();
+        
+        $report = Report::findById($id);
+        if (!$report || $report['status'] !== 'Ditugaskan') {
+            Response::redirect("/petugas/tugas/$id");
+        }
+
+        $csrfToken = $_POST['csrf_token'] ?? '';
+        if (!\App\Helpers\Security::verifyCsrf($csrfToken)) {
+            Response::setFlash('error', 'Validasi sesi kedaluwarsa. Silakan coba lagi.');
+            Response::redirect("/petugas/tugas/$id");
+            exit;
+        }
+
+        // Update Assignment status
+        $assignments = Assignment::getByReport($id);
+        foreach ($assignments as $a) {
+            if ($a['officer_id'] == $officer['id']) {
+                // We should theoretically update assignment status in DB, 
+                // but we might not have Assignment::updateStatus model method.
+                // Let's use direct query or assume updating the report status is primary.
+                $db = \App\Config\Database::getConnection();
+                $stmt = $db->prepare("UPDATE assignments SET status = 'Sedang Dikerjakan' WHERE id = :id");
+                $stmt->execute(['id' => $a['id']]);
+                break;
+            }
+        }
+
+        // Update Report Status
+        Report::updateStatus($id, 'Sedang Diperbaiki');
+        
+        ReportTimeline::create([
+            'report_id' => $id,
+            'status' => 'Sedang Diperbaiki',
+            'note' => 'Petugas telah tiba di lokasi dan sedang melakukan perbaikan.'
+        ]);
+
+        Notification::create([
+            'user_id' => $report['user_id'],
+            'title' => 'Pembaruan Laporan',
+            'message' => 'Status laporan Anda "#LPF-'.str_pad((string)$id, 5, '0', STR_PAD_LEFT).'" berubah menjadi: Sedang Diperbaiki',
+        ]);
+
+        Response::setFlash('success', 'Tugas berhasil diterima dan status berubah menjadi Sedang Diperbaiki.');
+        Response::redirect("/petugas/tugas/$id");
+    }
+
+    /**
+     * Selesaikan Tugas & Upload Bukti
+     */
+    public function finishTask(int $id): void {
+        AuthMiddleware::requireRole('petugas');
+        list($user, $officer) = $this->getOfficerInfo();
+
+        $report = Report::findById($id);
+        if (!$report || $report['status'] !== 'Sedang Diperbaiki') {
+            Response::redirect("/petugas/tugas/$id");
+        }
+
+        $notes = trim($_POST['notes'] ?? '');
+        $csrfToken = $_POST['csrf_token'] ?? '';
+
+        if (!\App\Helpers\Security::verifyCsrf($csrfToken)) {
+            Response::setFlash('error', 'Validasi sesi kedaluwarsa. Silakan coba lagi.');
+            Response::redirect("/petugas/tugas/$id");
+            exit;
+        }
+
+        if (!isset($_FILES['photo']) || $_FILES['photo']['error'] !== UPLOAD_ERR_OK) {
+            Response::setFlash('error', 'Harap unggah foto bukti perbaikan.');
+            Response::redirect("/petugas/tugas/$id");
+        }
+
+        $uploadService = new UploadService();
+        $uploadResult = $uploadService->uploadImage($_FILES['photo'], 'proofs');
+
+        if (!$uploadResult['success']) {
+            Response::setFlash('error', $uploadResult['error'] ?? 'Gagal mengunggah foto bukti.');
+            Response::redirect("/petugas/tugas/$id");
+        }
+
+        // Insert repair proof
+        RepairProof::create([
+            'report_id' => $id,
+            'photo' => $uploadResult['relative_url'],
+            'notes' => $notes
+        ]);
+
+        // Update Assignment Status
+        $assignments = Assignment::getByReport($id);
+        foreach ($assignments as $a) {
+            if ($a['officer_id'] == $officer['id']) {
+                $db = \App\Config\Database::getConnection();
+                $stmt = $db->prepare("UPDATE assignments SET status = 'Selesai' WHERE id = :id");
+                $stmt->execute(['id' => $a['id']]);
+                break;
+            }
+        }
+
+        // Update Report Status
+        Report::updateStatus($id, 'Selesai');
+        
+        ReportTimeline::create([
+            'report_id' => $id,
+            'status' => 'Selesai',
+            'note' => 'Perbaikan telah selesai dilakukan oleh petugas.'
+        ]);
+
+        Notification::create([
+            'user_id' => $report['user_id'],
+            'title' => 'Pembaruan Laporan',
+            'message' => 'Laporan Anda "#LPF-'.str_pad((string)$id, 5, '0', STR_PAD_LEFT).'" telah selesai diperbaiki.',
+        ]);
+
+        Response::setFlash('success', 'Pekerjaan selesai! Bukti perbaikan telah disimpan.');
+        Response::redirect("/petugas/tugas/$id");
+    }
+}

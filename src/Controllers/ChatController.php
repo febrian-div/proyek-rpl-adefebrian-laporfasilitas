@@ -1,0 +1,92 @@
+<?php
+namespace App\Controllers;
+
+use App\Helpers\Response;
+use App\Middleware\AuthMiddleware;
+use App\Services\AIService;
+use App\Services\ChatbotService;
+
+/**
+ * ChatController — endpoint chatbot AI.
+ * POST /api/chat  { message, history?[] }
+ */
+class ChatController {
+    private const RATE_LIMIT = 20; // pesan per menit per sesi
+
+    public function chat(): void {
+        header('Access-Control-Allow-Origin: *');
+
+        if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
+            Response::json(['error' => 'Method Not Allowed', 'message' => 'Gunakan metode POST.'], 405);
+        }
+
+        $input = $this->readInput();
+        $message = trim((string)($input['message'] ?? ''));
+        $history = is_array($input['history'] ?? null) ? array_slice($input['history'], -6) : [];
+
+        if ($message === '') {
+            Response::json(['error' => 'Bad Request', 'message' => 'Pesan tidak boleh kosong. Silakan tulis pertanyaan Anda.'], 422);
+        }
+        if (mb_strlen($message) > 1000) {
+            Response::json(['error' => 'Bad Request', 'message' => 'Pesan terlalu panjang (maks 1000 karakter).'], 422);
+        }
+
+        if (!$this->checkRateLimit()) {
+            Response::json(['error' => 'Rate Limited', 'message' => 'Terlalu banyak permintaan. Coba lagi dalam satu menit.'], 429);
+        }
+
+        $user = AuthMiddleware::user(); // null untuk tamu — FAQ tetap boleh
+
+        try {
+            $bot = new ChatbotService();
+
+            // 1. Jawaban instan untuk FAQ & panduan operasional
+            $faqAnswer = $bot->answerFAQ($message, $user);
+            if (is_string($faqAnswer)) {
+                Response::json(['message' => ChatbotService::cleanPlainText($faqAnswer), 'source' => 'faq']);
+            }
+
+            // 2. Baca, pahami, dan kumpulkan konteks real-time dari database MySQL
+            $dbContext = $bot->buildDatabaseContext($user, $message);
+
+            // 3. Jalankan pemrosesan AI cerdas dengan konteks data database aktual
+            $ai = new AIService();
+            $aiAnswer = $ai->chatText(ChatbotService::SYSTEM_PROMPT, $message, $dbContext, $history);
+            if (is_string($aiAnswer) && trim($aiAnswer) !== '') {
+                Response::json(['message' => ChatbotService::cleanPlainText(trim($aiAnswer)), 'source' => 'ai-database']);
+            }
+
+            // 4. Fallback langsung dari database jika AI API offline/timeout
+            $dbAnswer = $bot->answerDirectFromDatabase($message, $user);
+            Response::json(['message' => ChatbotService::cleanPlainText($dbAnswer), 'source' => 'database-direct']);
+        } catch (\Throwable $e) {
+            error_log('[ChatController] ' . $e->getMessage());
+            Response::json(['message' => 'Maaf, layanan chatbot sedang bermasalah. Silakan coba lagi atau hubungi admin.'], 500);
+        }
+    }
+
+    private function readInput(): array {
+        $contentType = $_SERVER['CONTENT_TYPE'] ?? '';
+        if (str_contains($contentType, 'application/json')) {
+            $raw = file_get_contents('php://input');
+            $decoded = json_decode((string)$raw, true);
+            if (is_array($decoded)) return $decoded;
+        }
+        return $_POST;
+    }
+
+    private function checkRateLimit(): bool {
+        if (session_status() === PHP_SESSION_NONE) session_start();
+        $now = time();
+        $window = (int)($_SESSION['chat_window'] ?? 0);
+        $count = (int)($_SESSION['chat_count'] ?? 0);
+        if ($now - $window >= 60) {
+            $_SESSION['chat_window'] = $now;
+            $_SESSION['chat_count'] = 1;
+            return true;
+        }
+        if ($count >= self::RATE_LIMIT) return false;
+        $_SESSION['chat_count'] = $count + 1;
+        return true;
+    }
+}

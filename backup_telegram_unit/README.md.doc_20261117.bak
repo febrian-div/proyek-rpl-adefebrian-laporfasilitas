@@ -1,0 +1,126 @@
+# LaporFasilitas 🏙️
+
+Sebuah platform pelaporan kerusakan fasilitas umum berbasis web yang modern, interaktif, dan terintegrasi dengan Kecerdasan Buatan (AI) untuk membantu verifikasi laporan secara efisien.
+
+---
+
+## 🚀 Fitur Utama
+
+- **Sistem Role-Based Access Control (RBAC)**: Terdapat 3 Role (Masyarakat, Admin, dan Petugas). Masing-masing memiliki dashboard dan akses spesifik.
+- **AI-Powered Recommendation**: Integrasi dengan Google Gemini AI untuk menganalisis foto pelaporan dan memberikan estimasi *Kategori*, *Tingkat Kerusakan*, dan *Prioritas*.
+- **Location Mapping**: Terintegrasi penuh dengan Leaflet & OpenStreetMap (OSM) untuk memetakan koordinat laporan secara akurat.
+- **Real-Time Notification System**: Notifikasi cerdas antar role di berbagai tahapan penyelesaian laporan (mulai dari verifikasi hingga perbaikan selesai).
+- **Responsive UI/UX**: Antarmuka modern yang siap digunakan baik di perangkat seluler (mobile), tablet, maupun desktop. Terdapat empty state, loading state, dan error handling yang terpoles dengan sangat rapi.
+- **Enterprise-Grade Security**: Perlindungan dari SQL Injection (via PDO Prepared Statements), XSS (via htmlspecialchars output encoding), dan serangan CSRF dengan validasi token *backend*. Tidak ada *hardcoded credentials*, semuanya diletakkan di file environment (.env).
+
+---
+
+## 🛠️ Tech Stack
+
+- **Backend**: PHP 8.2 (Vanilla OOP + MVC Architecture)
+- **Database**: MySQL / MariaDB (via PDO)
+- **Frontend**: HTML5, Vanilla CSS3 (Custom Design System, Flexbox/Grid), Vanilla JavaScript (ES6)
+- **Maps**: Leaflet.js, OpenStreetMap
+- **AI Provider**: Google Gemini (via REST API)
+- **Icons & Fonts**: FontAwesome 6, Google Fonts (Inter)
+
+---
+
+## 📂 Struktur Project
+
+```
+projekfasilitas/
+├── config/              # Konfigurasi aplikasi & DB (.env loader)
+├── public/              # Document Root (Aset Publik)
+│   ├── index.php        # Front Controller (Router Entry Point)
+│   ├── css/             # Stylesheets (app.css, components.css)
+│   ├── js/              # File Javascript
+│   └── uploads/         # Foto bukti unggahan warga & petugas
+├── src/                 # Core Source Code (Backend)
+│   ├── Controllers/     # MVC Controllers (Auth, Admin, Officer, Report)
+│   ├── Models/          # Database Models & Entities
+│   ├── Middleware/      # Pengelola Autentikasi & RBAC
+│   ├── Helpers/         # Helper keamanan, Flash Messages
+│   └── Services/        # Logic khusus (AIService, UploadService)
+├── views/               # PHP Templates (HTML Views)
+│   ├── admin/           # Tampilan Panel Admin
+│   ├── citizen/         # Tampilan Panel Warga
+│   ├── officer/         # Tampilan Panel Petugas Lapangan
+│   └── layouts/         # Layout utama (Header, Footer)
+├── tests/               # Skenario Automated Testing
+├── .env.example         # File contoh environment
+└── README.md            # Dokumentasi ini
+```
+
+---
+
+## ⚙️ Persyaratan Sistem & Instalasi
+
+1. **PHP 8.1+** (Disarankan PHP 8.2) dengan ekstensi: `pdo`, `pdo_mysql`, `curl`, `fileinfo`.
+2. **MySQL / MariaDB** (Disarankan XAMPP untuk OS Windows).
+
+### Cara Menginstal dan Menjalankan
+
+1. **Clone repositori** ini ke dalam direktori server Anda (misal `c:/xampp/htdocs/projekfasilitas`).
+2. **Setup Database**:
+   - Nyalakan **Apache** & **MySQL** di XAMPP Anda.
+   - Buat database kosong bernama `laporfasilitas`.
+3. **Environment Variable**:
+   - Salin file `.env.example` (jika ada) atau buat file `.env` baru di root folder Anda.
+   - Masukkan konfigurasi database Anda dan *API Key Gemini*.
+     ```env
+     DB_HOST=127.0.0.1
+     DB_NAME=laporfasilitas
+     DB_USER=root
+     DB_PASS=
+     
+     GEMINI_API_KEY=YOUR_GEMINI_API_KEY_HERE
+     ```
+4. **Migrasi Database**:
+   - Buka terminal/command prompt di *root* proyek Anda lalu jalankan migrasi berikut secara berurutan:
+     ```bash
+     php src/migrate.php
+     php src/migrate_timelines.php
+     php src/migrate_notifications.php
+     php src/migrate_indexes.php
+     ```
+5. **Jalankan Aplikasi**:
+   - Buka peramban dan navigasikan ke `http://localhost/projekfasilitas/public`.
+   - Atau gunakan built-in server PHP:
+     ```bash
+     cd public
+     php -S localhost:8000
+     ```
+
+---
+
+## 🧪 Menjalankan Automated Tests
+
+Aplikasi ini dilengkapi dengan paket pengujian lengkap untuk memvalidasi *Keamanan, Manajemen Sesi, Hak Akses, serta Logika Validasi*. Termasuk verifikasi CSRF, optimasi *query*, dan keamanan eksekusi sistem peran.
+
+Jalankan perintah ini melalui terminal:
+```bash
+php tests/run_all_tests.php
+```
+
+---
+
+## 👥 Akun Demo / Default
+
+Pada saat migrasi awal (`src/migrate.php`), sistem secara otomatis telah membuat *seed data* untuk membantu Anda melakukan pengujian. Silakan *login* dengan kredensial berikut:
+
+- **Admin (Pemegang Keputusan & Analisis)**
+  - **Email:** `admin@laporfasilitas.com`
+  - **Sandi:** `admin123`
+
+- **Petugas Lapangan (Eksekutor Perbaikan)**
+  - **Email:** `petugas@laporfasilitas.com`
+  - **Sandi:** `petugas123`
+
+- **Masyarakat (Pelapor)**
+  - **Email:** `warga@laporfasilitas.com`
+  - **Sandi:** `warga123`
+
+---
+
+*Dikembangkan dengan dedikasi untuk kualitas, performa, dan tata kelola pelaporan perkotaan yang lebih baik.* 🌆

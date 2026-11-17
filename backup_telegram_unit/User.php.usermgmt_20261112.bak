@@ -1,0 +1,134 @@
+<?php
+namespace App\Models;
+
+use App\Config\Database;
+use PDO;
+
+class User {
+    /**
+     * Find user by ID
+     */
+    public static function findById(int $id): ?array {
+        $db = Database::getConnection();
+        if (!$db) return null;
+
+        $stmt = $db->prepare("SELECT id, name, email, role, created_at, updated_at FROM users WHERE id = :id LIMIT 1");
+        $stmt->execute(['id' => $id]);
+        $user = $stmt->fetch();
+        return $user ?: null;
+    }
+
+    /**
+     * Find user by email (includes password hash for auth)
+     */
+    public static function findByEmail(string $email): ?array {
+        $db = Database::getConnection();
+        if (!$db) return null;
+
+        $stmt = $db->prepare("SELECT * FROM users WHERE email = :email LIMIT 1");
+        $stmt->execute(['email' => $email]);
+        $user = $stmt->fetch();
+        return $user ?: null;
+    }
+
+    /**
+     * Get all users, optionally filtered by role
+     */
+    public static function all(?string $role = null): array {
+        $db = Database::getConnection();
+        if (!$db) return [];
+
+        if ($role !== null) {
+            $stmt = $db->prepare("SELECT id, name, email, role, created_at, updated_at FROM users WHERE role = :role ORDER BY name ASC");
+            $stmt->execute(['role' => $role]);
+        } else {
+            $stmt = $db->query("SELECT id, name, email, role, created_at, updated_at FROM users ORDER BY created_at DESC");
+        }
+
+        return $stmt->fetchAll() ?: [];
+    }
+
+    /**
+     * Create a new user
+     */
+    public static function create(array $data): ?int {
+        $db = Database::getConnection();
+        if (!$db) return null;
+
+        $stmt = $db->prepare("
+            INSERT INTO users (name, email, password, role)
+            VALUES (:name, :email, :password, :role)
+        ");
+        $stmt->execute([
+            'name'     => $data['name'],
+            'email'    => $data['email'],
+            'password' => password_hash($data['password'], PASSWORD_BCRYPT),
+            'role'     => $data['role'] ?? 'masyarakat',
+        ]);
+
+        return (int)$db->lastInsertId();
+    }
+
+    /**
+     * Update user details
+     */
+    public static function update(int $id, array $data): bool {
+        $db = Database::getConnection();
+        if (!$db) return false;
+
+        $fields = [];
+        $params = ['id' => $id];
+
+        if (isset($data['name'])) {
+            $fields[] = "name = :name";
+            $params['name'] = $data['name'];
+        }
+        if (isset($data['email'])) {
+            $fields[] = "email = :email";
+            $params['email'] = $data['email'];
+        }
+        if (!empty($data['password'])) {
+            $fields[] = "password = :password";
+            $params['password'] = password_hash($data['password'], PASSWORD_BCRYPT);
+        }
+        if (isset($data['role'])) {
+            $fields[] = "role = :role";
+            $params['role'] = $data['role'];
+        }
+
+        if (empty($fields)) return false;
+
+        $sql = "UPDATE users SET " . implode(', ', $fields) . " WHERE id = :id";
+        $stmt = $db->prepare($sql);
+        return $stmt->execute($params);
+    }
+
+    /**
+     * Delete user
+     */
+    public static function delete(int $id): bool {
+        $db = Database::getConnection();
+        if (!$db) return false;
+
+        $stmt = $db->prepare("DELETE FROM users WHERE id = :id");
+        return $stmt->execute(['id' => $id]);
+    }
+
+    // ==========================================
+    // RELATIONSHIPS
+    // ==========================================
+
+    /**
+     * Relationship: User (Masyarakat) has many Reports
+     */
+    public static function reports(int $userId): array {
+        return Report::getByUser($userId);
+    }
+
+    /**
+     * Relationship: User (Petugas) has one Officer profile
+     */
+    public static function officerProfile(int $userId): ?array {
+        return Officer::findByUserId($userId);
+    }
+}

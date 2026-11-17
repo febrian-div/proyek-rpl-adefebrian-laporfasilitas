@@ -1,0 +1,184 @@
+<?php
+namespace App\Controllers;
+
+use App\Helpers\Response;
+use App\Helpers\Security;
+use App\Middleware\AuthMiddleware;
+use App\Models\User;
+use App\Services\NotificationService;
+use App\Services\TelegramService;
+
+class AuthController {
+    /**
+     * Show login page
+     */
+    public function showLogin(): void {
+        AuthMiddleware::requireGuest();
+        view('auth.login', ['title' => 'Masuk Akun - LaporFasilitas']);
+    }
+
+    /**
+     * Process login request
+     */
+    public function processLogin(): void {
+        AuthMiddleware::requireGuest();
+
+        $token = $_POST['csrf_token'] ?? '';
+        if (!Security::verifyCsrf($token)) {
+            Response::setFlash('error', 'Token keamanan (CSRF) tidak valid atau sesi telah berakhir.');
+            Response::redirect('/login');
+        }
+
+        $email = filter_var(trim($_POST['email'] ?? ''), FILTER_VALIDATE_EMAIL);
+        $password = $_POST['password'] ?? '';
+
+        if (!$email || empty($password)) {
+            Response::setFlash('error', 'Harap isi email dan password dengan benar.');
+            Response::redirect('/login');
+        }
+
+        $user = User::findByEmail($email);
+        if (!$user || !password_verify($password, $user['password'])) {
+            Response::setFlash('error', 'Email atau kata sandi yang Anda masukkan salah.');
+            Response::redirect('/login');
+        }
+
+        // Tolak akun nonaktif
+        if (isset($user['is_active']) && !(bool)$user['is_active']) {
+            Response::setFlash('error', 'Akun Anda telah dinonaktifkan. Hubungi administrator.');
+            Response::redirect('/login');
+        }
+
+        // Regenerate session ID on login to protect against session fixation attacks
+        AuthMiddleware::initSession();
+        if (session_status() === PHP_SESSION_ACTIVE && !headers_sent()) {
+            session_regenerate_id(true);
+        }
+
+        // Set authenticated user payload in session
+        $_SESSION['user'] = [
+            'id'    => (int)$user['id'],
+            'name'  => $user['name'],
+            'email' => $user['email'],
+            'role'  => $user['role'],
+        ];
+
+        Response::setFlash('success', "Selamat datang kembali, {$user['name']}!");
+
+        // Redirect based on role
+        $target = match ($user['role']) {
+            'admin'   => '/admin',
+            'petugas' => '/petugas',
+            default   => '/laporan',
+        };
+
+        Response::redirect($target);
+    }
+
+    /**
+     * Show register page
+     */
+    public function showRegister(): void {
+        AuthMiddleware::requireGuest();
+        view('auth.register', ['title' => 'Daftar Akun Masyarakat - LaporFasilitas']);
+    }
+
+    /**
+     * Process public registration (always 'masyarakat').
+     *
+     * Pendaftaran publik dikunci untuk role masyarakat. Nilai role dari form
+     * sengaja diabaikan agar tidak bisa dimanipulasi menjadi petugas/admin.
+     * Akun staf hanya dibuat admin melalui halaman Manajemen Pengguna.
+     */
+    public function processRegister(): void {
+        AuthMiddleware::requireGuest();
+
+        $token = $_POST['csrf_token'] ?? '';
+        if (!Security::verifyCsrf($token)) {
+            Response::setFlash('error', 'Token keamanan (CSRF) tidak valid atau sesi telah berakhir.');
+            Response::redirect('/register');
+        }
+
+        $name = trim($_POST['name'] ?? '');
+        $email = filter_var(trim($_POST['email'] ?? ''), FILTER_VALIDATE_EMAIL);
+        $password = $_POST['password'] ?? '';
+        $passwordConfirm = $_POST['password_confirm'] ?? '';
+
+        // Validation checks
+        if (empty($name) || !$email || empty($password)) {
+            Response::setFlash('error', 'Nama, email, dan kata sandi wajib diisi.');
+            Response::redirect('/register');
+        }
+
+        if (strlen($name) < 3) {
+            Response::setFlash('error', 'Nama lengkap minimal 3 karakter.');
+            Response::redirect('/register');
+        }
+
+        if (strlen($password) < 6) {
+            Response::setFlash('error', 'Kata sandi minimal 6 karakter.');
+            Response::redirect('/register');
+        }
+
+        if ($password !== $passwordConfirm) {
+            Response::setFlash('error', 'Konfirmasi kata sandi tidak cocok.');
+            Response::redirect('/register');
+        }
+
+        $existing = User::findByEmail($email);
+        if ($existing) {
+            Response::setFlash('error', 'Email ini sudah terdaftar. Silakan gunakan email lain atau masuk.');
+            Response::redirect('/register');
+        }
+
+        // Pendaftaran publik selalu role 'masyarakat' (abaikan input role apa pun)
+        $userId = User::create([
+            'name'     => $name,
+            'email'    => $email,
+            'password' => $password, // Will be hashed via PASSWORD_BCRYPT in User::create
+            'role'     => 'masyarakat',
+        ]);
+
+        if (!$userId) {
+            Response::setFlash('error', 'Gagal membuat akun. Silakan coba kembali.');
+            Response::redirect('/register');
+        }
+
+        // Notifikasi pendaftaran (website + Telegram admin jika dikonfigurasi)
+        // Dibungkus try-catch agar kegagalan notifikasi tidak membatalkan alur pendaftaran.
+        $newUser = User::findById($userId);
+        if ($newUser) {
+            try {
+                $notifService = new NotificationService(new TelegramService());
+                $notifService->notifyUserRegistered($newUser);
+            } catch (\Throwable $e) {
+                error_log('[AuthController] Notification error after registration (user_id=' . $userId . '): ' . $e->getMessage());
+            }
+        }
+
+        Response::setFlash('success', 'Pendaftaran akun berhasil! Silakan masuk dengan email dan kata sandi Anda.');
+        Response::redirect('/login');
+    }
+
+    /**
+     * Logout and destroy session
+     */
+    public function logout(): void {
+        AuthMiddleware::initSession();
+        $_SESSION = [];
+        if (ini_get("session.use_cookies") && !headers_sent()) {
+            $params = session_get_cookie_params();
+            setcookie(session_name(), '', time() - 42000,
+                $params["path"], $params["domain"],
+                $params["secure"], $params["httponly"]
+            );
+        }
+        session_destroy();
+
+        if (session_status() === PHP_SESSION_NONE) {
+            session_start();
+        }
+        Response::setFlash('info', 'Anda telah berhasil keluar dari sistem.');
+        Response::redirect('/login');
+    }
+}

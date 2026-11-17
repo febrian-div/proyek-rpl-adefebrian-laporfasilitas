@@ -1,0 +1,85 @@
+<?php
+namespace App\Controllers;
+
+use App\Helpers\Response;
+
+/**
+ * TelegramWebhookController — Menerima update dari Telegram Bot API via webhook.
+ *
+ * Endpoint ini hanya untuk menerima notifikasi dari Telegram. Tidak memerlukan
+ * login pengguna karena request berasal dari server Telegram. Keselamatan
+ * dijamin melalui validasi header X-Telegram-Bot-Api-Secret-Token.
+ *
+ * Pada tahap 1, endpoint hanya menerima dan memvalidasi update. Tidak melakukan
+ * pairing, tidak mengubah database, dan tidak mengirim pesan ke Telegram.
+ */
+class TelegramWebhookController {
+
+    /**
+     * Handle webhook update dari Telegram.
+     *
+     * @return void
+     */
+    public function handle(): void {
+        // Hanya menerima metode POST
+        if (( $_SERVER['REQUEST_METHOD'] ?? '' ) !== 'POST') {
+            Response::json([
+                'error' => 'Method Not Allowed',
+                'message' => 'Hanya metode POST yang diperbolehkan.',
+            ], 405);
+        }
+
+        // Validasi secret token dari header
+        $secretToken = $_SERVER['HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN'] ?? '';
+        $configuredSecret = ( string ) env( 'TELEGRAM_WEBHOOK_SECRET', '' );
+
+        if ( $configuredSecret === '' || ! hash_equals( $configuredSecret, $secretToken ) ) {
+            http_response_code( 403 );
+            header( 'Content-Type: application/json; charset=utf-8' );
+            echo json_encode( [
+                'error' => 'Forbidden',
+                'message' => 'Secret token webhook tidak valid atau belum dikonfigurasi.',
+            ] );
+            exit;
+        }
+
+        // Baca input JSON
+        $rawInput = file_get_contents( 'php://input' );
+        if ( $rawInput === false || $rawInput === '' ) {
+            Response::json([
+                'error' => 'Bad Request',
+                'message' => 'Body request kosong.',
+            ], 400);
+        }
+
+        $update = json_decode( $rawInput, true );
+        if ( $update === null || ! is_array( $update ) ) {
+            Response::json([
+                'error' => 'Bad Request',
+                'message' => 'Format JSON tidak valid.',
+            ], 400);
+        }
+
+        // Tahap 1: hanya identifikasi struktur update, tidak melakukan pairing
+        // atau mengubah database.
+        $message = $update['message'] ?? null;
+        if ( ! is_array( $message ) ) {
+            // Update tidak relevan (misalnya edited_message, channel_post, dll.)
+            // Tetap beri respons 200 agar Telegram tidak retry.
+            Response::json([
+                'status' => 'ignored',
+                'message' => 'Update tidak relevan untuk diproses.',
+            ], 200);
+        }
+
+        $chatId = $message['chat']['id'] ?? null;
+        $text = $message['text'] ?? '';
+
+        // Untuk tahap 1, tidak ada proses pairing atau ubah database.
+        // Hanya mengakui penerimaan update.
+        Response::json([
+            'status' => 'received',
+            'message' => 'Update diterima dan diverifikasi.',
+        ], 200);
+    }
+}

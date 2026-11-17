@@ -1,0 +1,263 @@
+<?php
+namespace App\Controllers;
+
+use App\Middleware\AuthMiddleware;
+use App\Helpers\Response;
+use App\Helpers\Security;
+use App\Models\Report;
+use App\Models\Officer;
+use App\Models\User;
+use App\Models\Assignment;
+use App\Models\Notification;
+use App\Models\RepairProof;
+use App\Services\NotificationService;
+use App\Services\TelegramService;
+
+class AdminController {
+    public function dashboard(): void {
+        AuthMiddleware::requireRole('admin');
+        $user = AuthMiddleware::user();
+        $reports = Report::getAll();
+
+        view('admin.dashboard', [
+            'title' => 'Admin Dashboard - LaporFasilitas',
+            'user' => $user,
+            'reports' => $reports, // You might want to consider fetching just the counts here for performance, but we use this for now
+        ]);
+    }
+
+    public function reports(): void {
+        AuthMiddleware::requireRole('admin');
+        
+        $filters = [
+            'search' => $_GET['search'] ?? '',
+            'status' => $_GET['status'] ?? '',
+            'facility_category' => $_GET['kategori'] ?? '',
+            'priority' => $_GET['prioritas'] ?? '',
+            'sort' => $_GET['sort'] ?? 'created_at',
+            'direction' => $_GET['dir'] ?? 'DESC',
+        ];
+
+        $page = max(1, (int)($_GET['page'] ?? 1));
+        $limit = 10;
+        $filters['limit'] = $limit;
+        $filters['offset'] = ($page - 1) * $limit;
+
+        $totalReports = Report::countAll($filters);
+        $reports = Report::getAll($filters);
+        $totalPages = ceil($totalReports / $limit);
+
+        view('admin.reports', [
+            'title' => 'Semua Laporan - Admin',
+            'reports' => $reports,
+            'filters' => $filters,
+            'page' => $page,
+            'totalPages' => $totalPages,
+            'totalReports' => $totalReports
+        ]);
+    }
+
+    public function officers(): void {
+        AuthMiddleware::requireRole('admin');
+        
+        $officers = Officer::all();
+        foreach ($officers as &$officer) {
+            $tasks = Officer::assignedReports($officer['id']);
+            $officer['active_tasks'] = count(array_filter($tasks, fn($t) => in_array($t['assignment_status'], ['Ditugaskan', 'Sedang Dikerjakan'])));
+        }
+
+        view('admin.officers', [
+            'title' => 'Manajemen Petugas - Admin',
+            'officers' => $officers
+        ]);
+    }
+
+    /**
+     * User management page (admin only).
+     * Staff accounts (petugas/admin) may ONLY be created here, never via public register.
+     */
+    public function users(): void {
+        AuthMiddleware::requireRole('admin');
+
+        view('admin.users', [
+            'title' => 'Manajemen Pengguna - Admin',
+            'users' => User::all(),
+        ]);
+    }
+
+    /**
+     * Store a new staff/user account created by admin.
+     */
+    public function storeUser(): void {
+        AuthMiddleware::requireRole('admin');
+
+        $token = $_POST['csrf_token'] ?? '';
+        if (!Security::verifyCsrf($token)) {
+            Response::setFlash('error', 'Token keamanan (CSRF) tidak valid atau sesi telah berakhir.');
+            Response::redirect('/admin/pengguna');
+        }
+
+        $name = trim($_POST['name'] ?? '');
+        $email = filter_var(trim($_POST['email'] ?? ''), FILTER_VALIDATE_EMAIL);
+        $password = $_POST['password'] ?? '';
+        $role = strtolower(trim($_POST['role'] ?? ''));
+        $phone = trim($_POST['phone'] ?? '');
+        $serviceArea = trim($_POST['service_area'] ?? '');
+
+        $allowedRoles = ['masyarakat', 'petugas', 'admin'];
+        if (empty($name) || strlen($name) < 3) {
+            Response::setFlash('error', 'Nama lengkap minimal 3 karakter.');
+            Response::redirect('/admin/pengguna');
+        }
+        if (!$email) {
+            Response::setFlash('error', 'Alamat email tidak valid.');
+            Response::redirect('/admin/pengguna');
+        }
+        if (strlen($password) < 6) {
+            Response::setFlash('error', 'Kata sandi minimal 6 karakter.');
+            Response::redirect('/admin/pengguna');
+        }
+        if (!in_array($role, $allowedRoles, true)) {
+            Response::setFlash('error', 'Role tidak valid. Pilih masyarakat, petugas, atau admin.');
+            Response::redirect('/admin/pengguna');
+        }
+        if (User::findByEmail($email)) {
+            Response::setFlash('error', 'Email ini sudah terdaftar.');
+            Response::redirect('/admin/pengguna');
+        }
+
+        // Petugas wajib memiliki profil lapangan (telepon & area layanan)
+        if ($role === 'petugas' && (empty($phone) || empty($serviceArea))) {
+            Response::setFlash('error', 'Akun petugas wajib dilengkapi nomor telepon dan area layanan.');
+            Response::redirect('/admin/pengguna');
+        }
+
+        $userId = User::create([
+            'name'     => $name,
+            'email'    => $email,
+            'password' => $password,
+            'role'     => $role,
+        ]);
+
+        if (!$userId) {
+            Response::setFlash('error', 'Gagal membuat akun. Silakan coba kembali.');
+            Response::redirect('/admin/pengguna');
+        }
+
+        if ($role === 'petugas') {
+            Officer::create([
+                'user_id'      => $userId,
+                'phone'        => $phone,
+                'service_area' => $serviceArea,
+            ]);
+        }
+
+        Response::setFlash('success', "Akun {$role} '{$name}' berhasil dibuat.");
+        Response::redirect('/admin/pengguna');
+    }
+
+    public function show(int $id): void {
+        AuthMiddleware::requireRole('admin');
+        $user = AuthMiddleware::user();
+        
+        $report = Report::findById($id);
+        if (!$report) {
+            http_response_code(404);
+            echo "Laporan tidak ditemukan";
+            exit;
+        }
+
+        $officers = Officer::all();
+        $proofs = RepairProof::getByReport($id);
+
+        view('admin.detail', [
+            'title' => 'Detail Laporan - LaporFasilitas',
+            'user' => $user,
+            'report' => $report,
+            'officers' => $officers,
+            'proofs' => $proofs
+        ]);
+    }
+
+    public function verify(int $id): void {
+        AuthMiddleware::requireRole('admin');
+        
+        $report = Report::findById($id);
+        if (!$report) {
+            Response::redirect('/admin');
+        }
+
+        $status = $_POST['status'] ?? '';
+        $priority = $_POST['priority'] ?? null;
+        $facility_category = $_POST['facility_category'] ?? null;
+        $damage_type = $_POST['damage_type'] ?? null;
+        $officerId = $_POST['officer_id'] ?? '';
+        $rejection_reason = trim($_POST['rejection_reason'] ?? '');
+        $csrfToken = $_POST['csrf_token'] ?? '';
+
+        if (!\App\Helpers\Security::verifyCsrf($csrfToken)) {
+            Response::setFlash('error', 'Validasi sesi kedaluwarsa. Silakan coba lagi.');
+            Response::redirect("/admin/laporan/$id");
+        }
+
+        if (!in_array($status, ['Menunggu Verifikasi', 'Diverifikasi', 'Ditolak', 'Ditugaskan', 'Sedang Diperbaiki', 'Selesai'])) {
+            $status = $report['status'];
+        }
+
+        if ($status === 'Diverifikasi' && !empty($officerId)) {
+            $status = 'Ditugaskan';
+        }
+
+        $updateData = [];
+        if (!empty($priority)) $updateData['priority'] = $priority;
+        if (!empty($facility_category)) $updateData['facility_category'] = $facility_category;
+        if (!empty($damage_type)) $updateData['damage_type'] = $damage_type;
+        $updateData['status'] = $status;
+
+        Report::update($id, $updateData);
+
+        // Record timeline if status changed
+        if ($report['status'] !== $status) {
+            $note = null;
+            if ($status === 'Ditolak') {
+                $note = empty($rejection_reason) ? "Laporan ditolak oleh admin." : $rejection_reason;
+            } elseif ($status === 'Ditugaskan' && !empty($officerId)) {
+                $note = "Laporan telah ditugaskan kepada petugas.";
+            }
+
+            \App\Models\ReportTimeline::create([
+                'report_id' => $id,
+                'status' => $status,
+                'note' => $note
+            ]);
+
+            // Notifikasi perubahan status ke pelapor (website + Telegram jika dikonfigurasi)
+            // Jangan pass officerUserId saat status Ditugaskan dan officer berubah,
+            // karena akan ditangani oleh notifyTaskReassigned() untuk menghindari duplikasi.
+            $notifyOfficerId = null;
+            if ($status !== 'Ditugaskan' || $report['officer_id'] == $officerId) {
+                $notifyOfficerId = $officerId ?: null;
+            }
+            $notifService = new NotificationService(new TelegramService());
+            $notifService->notifyReportStatusChanged($id, $status, $rejection_reason, $notifyOfficerId);
+
+            if ($status === 'Ditugaskan' && !empty($officerId)) {
+                if ($report['officer_id'] != $officerId) {
+                    Assignment::create([
+                        'report_id' => $id,
+                        'officer_id' => $officerId
+                    ]);
+
+                    // Notifikasi penugasan baru ke officer lama dan baru (website + Telegram jika dikonfigurasi)
+                    // Hanya dipanggil jika officer lama ada, agar tidak membuat notifikasi ke user_id 0
+                    $oldOfficerUserId = $report['officer_id'] ? (int)$report['officer_id'] : 0;
+                    if ($oldOfficerUserId > 0) {
+                        $notifService->notifyTaskReassigned($id, $oldOfficerUserId, (int)$officerId);
+                    }
+                }
+            }
+        }
+
+        Response::redirect("/admin/laporan/$id");
+    }
+}

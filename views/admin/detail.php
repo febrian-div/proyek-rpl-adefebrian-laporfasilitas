@@ -1,0 +1,191 @@
+<?php
+use App\Helpers\Security;
+require_once VIEWS_PATH . '/layouts/header.php';
+?>
+
+<div class="mb-4">
+    <a href="<?= base_url('/admin') ?>" class="text-primary text-sm font-semibold hover:underline">
+        <i class="fa-solid fa-arrow-left"></i> Kembali ke Dashboard Admin
+    </a>
+</div>
+
+<div class="grid" style="grid-template-columns: 2fr 1fr; gap: 1.5rem;">
+    <!-- Bagian Kiri: Detail Laporan -->
+    <div class="card">
+        <div class="card-header flex justify-between items-center border-b pb-3 mb-3">
+            <h2 class="text-xl font-bold">Laporan #LPF-<?= str_pad((string)$report['id'], 5, '0', STR_PAD_LEFT) ?></h2>
+            <span class="badge badge-verified"><?= htmlspecialchars($report['status']) ?></span>
+        </div>
+        
+        <div class="mb-4">
+            <h3 class="font-bold text-lg"><?= htmlspecialchars($report['title']) ?></h3>
+            <p class="text-sm text-muted mb-2">Dilaporkan oleh <strong><?= htmlspecialchars($report['reporter_name']) ?></strong> pada <?= date('d M Y H:i', strtotime($report['created_at'])) ?></p>
+        </div>
+
+        <?php if (!empty($report['photo'])): ?>
+            <div class="mb-4">
+                <img src="/uploads/reports/<?= htmlspecialchars($report['photo']) ?>" alt="Foto Kerusakan" class="img-fluid" style="border-radius: 0.5rem; max-height: 400px; object-fit: cover; width: 100%;">
+            </div>
+        <?php endif; ?>
+
+        <div class="mb-4">
+            <h4 class="font-semibold text-sm text-muted uppercase mb-1">Deskripsi Kerusakan</h4>
+            <p><?= nl2br(htmlspecialchars($report['description'])) ?></p>
+        </div>
+
+        <div class="grid grid-2 mb-4 gap-4">
+            <div>
+                <h4 class="font-semibold text-sm text-muted uppercase mb-1">Kategori Fasilitas</h4>
+                <p><?= htmlspecialchars($report['facility_category'] ?? '-') ?></p>
+            </div>
+            <div>
+                <h4 class="font-semibold text-sm text-muted uppercase mb-1">Tipe Kerusakan</h4>
+                <p><?= htmlspecialchars($report['damage_type'] ?? '-') ?></p>
+            </div>
+            <div>
+                <h4 class="font-semibold text-sm text-muted uppercase mb-1">Prioritas (Saat ini)</h4>
+                <p>
+                    <?php if ($report['priority']): ?>
+                        <span class="badge badge-severity-<?= strtolower($report['priority']) ?>"><?= htmlspecialchars($report['priority']) ?></span>
+                    <?php else: ?>
+                        -
+                    <?php endif; ?>
+                </p>
+            </div>
+            <div>
+                <h4 class="font-semibold text-sm text-muted uppercase mb-1">Lokasi</h4>
+                <p><?= nl2br(htmlspecialchars($report['address'])) ?></p>
+            </div>
+        </div>
+        
+        <?php if (!empty($report['ai_result_data'])): ?>
+        <div class="mb-4 p-3 rounded" style="background-color: var(--bg-secondary); border: 1px solid var(--border-color);">
+            <div class="flex justify-between items-center mb-2">
+                <h4 class="font-bold"><i class="fa-solid fa-robot text-primary"></i> Analisis AI (Rekomendasi)</h4>
+                <?php if (isset($report['ai_result_data']['confidence'])): ?>
+                    <span class="badge" style="background: var(--primary-color); color: white; font-size: 0.75rem;">
+                        Keyakinan: <?= number_format((float)$report['ai_result_data']['confidence'] * 100, 1) ?>%
+                    </span>
+                <?php endif; ?>
+            </div>
+            <div class="text-sm">
+                <p><strong>Estimasi Kategori:</strong> <?= htmlspecialchars($report['ai_result_data']['facility_category'] ?? '-') ?></p>
+                <p><strong>Jenis Kerusakan:</strong> <?= htmlspecialchars($report['ai_result_data']['damage_type'] ?? '-') ?></p>
+                <p><strong>Estimasi Keparahan:</strong> <?= htmlspecialchars($report['ai_result_data']['severity'] ?? '-') ?></p>
+            </div>
+            <p class="text-xs text-muted mt-2"><i class="fa-solid fa-info-circle"></i> Hasil AI hanya berupa saran awal dan dapat diubah oleh Admin.</p>
+        </div>
+        <?php else: ?>
+        <div class="mb-4 p-3 rounded text-center text-muted" style="background-color: var(--bg-secondary); border: 1px dashed var(--border-color);">
+            <i class="fa-solid fa-robot text-2xl mb-1"></i>
+            <p class="text-sm">Analisis AI tidak tersedia untuk laporan ini.</p>
+        </div>
+        <?php endif; ?>
+
+    </div>
+
+    <!-- Bagian Kanan: Aksi Admin -->
+    <div>
+        <div class="card mb-4" style="border-top: 4px solid var(--primary-color);">
+            <div class="card-header mb-3 pb-2 border-b">
+                <h3 class="font-bold text-lg">Verifikasi & Penugasan</h3>
+            </div>
+            
+            <form action="<?= base_url('/admin/laporan/' . $report['id'] . '/verifikasi') ?>" method="POST">
+                <?= Security::csrfField() ?>
+                
+                <div class="form-group">
+                    <label class="form-label">Ubah Status</label>
+                    <select name="status" id="statusSelect" class="form-control" onchange="toggleRejectionReason()">
+                        <?php 
+                            $statuses = ['Menunggu Verifikasi', 'Diverifikasi', 'Ditolak', 'Ditugaskan', 'Sedang Diperbaiki', 'Selesai'];
+                            foreach ($statuses as $st):
+                        ?>
+                            <option value="<?= $st ?>" <?= $report['status'] === $st ? 'selected' : '' ?>><?= $st ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+
+                <div class="form-group" id="rejectionReasonGroup" style="display: <?= $report['status'] === 'Ditolak' ? 'block' : 'none' ?>;">
+                    <label class="form-label">Alasan Penolakan <span class="text-danger">*</span></label>
+                    <textarea name="rejection_reason" class="form-control" rows="3" placeholder="Wajib diisi jika ditolak..."></textarea>
+                </div>
+
+                <script>
+                function toggleRejectionReason() {
+                    const status = document.getElementById('statusSelect').value;
+                    document.getElementById('rejectionReasonGroup').style.display = (status === 'Ditolak') ? 'block' : 'none';
+                }
+                </script>
+
+                <div class="form-group">
+                    <label class="form-label">Kategori Fasilitas</label>
+                    <select name="facility_category" class="form-control">
+                        <option value="">-- Pilih Kategori --</option>
+                        <?php 
+                            $categories = ['Jalan', 'Lampu Jalan', 'Trotoar', 'Taman', 'Tempat Sampah', 'Saluran Air', 'Fasilitas Umum Lainnya'];
+                            foreach ($categories as $cat):
+                        ?>
+                            <option value="<?= $cat ?>" <?= ($report['facility_category'] ?? '') === $cat ? 'selected' : '' ?>><?= $cat ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">Jenis Kerusakan</label>
+                    <input type="text" name="damage_type" class="form-control" value="<?= htmlspecialchars($report['damage_type'] ?? '') ?>" placeholder="Contoh: Aspal berlubang">
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">Prioritas Penanganan</label>
+                    <select name="priority" class="form-control">
+                        <option value="">-- Belum Ditentukan --</option>
+                        <?php 
+                            $priorities = ['Rendah', 'Sedang', 'Tinggi', 'Darurat'];
+                            foreach ($priorities as $pr):
+                        ?>
+                            <option value="<?= $pr ?>" <?= $report['priority'] === $pr ? 'selected' : '' ?>><?= $pr ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">Tugaskan Petugas</label>
+                    <select name="officer_id" class="form-control">
+                        <option value="">-- Pilih Petugas --</option>
+                        <?php foreach ($officers as $officer): ?>
+                            <option value="<?= $officer['id'] ?>" <?= ($report['officer_id'] ?? '') == $officer['id'] ? 'selected' : '' ?>>
+                                <?= htmlspecialchars($officer['name']) ?> - <?= htmlspecialchars($officer['service_area']) ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                    <small class="text-muted block mt-1">Jika petugas dipilih dan status = "Diverifikasi", maka status otomatis menjadi "Ditugaskan".</small>
+                </div>
+
+                <div class="form-group mt-4">
+                    <button type="submit" class="btn btn-primary w-full">Simpan Perubahan</button>
+                </div>
+            </form>
+        </div>
+
+        <?php if (!empty($proofs)): ?>
+        <div class="card">
+            <div class="card-header mb-3 pb-2 border-b">
+                <h3 class="font-bold text-lg">Bukti Perbaikan</h3>
+            </div>
+            <?php foreach ($proofs as $proof): ?>
+                <div class="mb-3">
+                    <img src="/uploads/proofs/<?= htmlspecialchars($proof['photo']) ?>" alt="Bukti Perbaikan" class="img-fluid rounded mb-2" style="width: 100%; max-height: 200px; object-fit: cover;">
+                    <?php if (!empty($proof['notes'])): ?>
+                        <p class="text-sm"><strong>Catatan:</strong> <?= nl2br(htmlspecialchars($proof['notes'])) ?></p>
+                    <?php endif; ?>
+                    <p class="text-xs text-muted mt-1"><?= date('d M Y H:i', strtotime($proof['created_at'])) ?></p>
+                </div>
+                <hr class="mb-3">
+            <?php endforeach; ?>
+        </div>
+        <?php endif; ?>
+    </div>
+</div>
+
+<?php require_once VIEWS_PATH . '/layouts/footer.php'; ?>

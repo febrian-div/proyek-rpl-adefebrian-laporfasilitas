@@ -1,0 +1,551 @@
+<?php
+namespace App\Services;
+
+use App\Config\Database;
+use App\Models\Assignment;
+use App\Models\Officer;
+use App\Models\Report;
+use App\Models\ReportTimeline;
+use App\Models\RepairProof;
+use PDO;
+
+/**
+ * ChatbotService — Layanan Chatbot AI Terkoneksi Database LaporFasilitas.
+ * Mampu membaca, memahami, dan menganalisis seluruh data database secara real-time.
+ */
+class ChatbotService {
+    public const SYSTEM_PROMPT = 'Kamu adalah Asisten AI LaporFasilitas, asisten cerdas resmi untuk aplikasi pelaporan fasilitas umum LaporFasilitas. '
+        . 'Kamu memiliki integrasi dan akses langsung ke basis data (database MySQL) aplikasi secara real-time. '
+        . 'Tugasmu adalah membantu masyarakat, petugas lapangan, dan administrator memahami fitur aplikasi serta membaca, menganalisis, dan melaporkan data fasilitas umum yang tersimpan di database. '
+        . 'ATURAN UTAMA FORMAT JAWABAN (SANGAT KETAT): '
+        . '1. JANGAN PERNAH menggunakan format Markdown seperti bintang tebal (**), garis miring (*), penanda judul (#), tanda petik kode (`), atau garis tabel pipa (|). '
+        . '2. Tuliskan jawaban dalam teks polos (plain text) yang rapi, bersih, dan mudah dibaca. '
+        . '3. Untuk membuat tampilan rapi dan terstruktur: gunakan baris baru (enter) dan penomoran (1, 2, 3) atau penanda sederhana seperti simbol minus (-) atau bullet (•). '
+        . '4. Buat paragraf yang singkat dan langsung pada inti informasi. '
+        . '5. Jangan menyertakan simbol matematika atau sintaks khusus yang bisa merusak tampilan UI. '
+        . 'ATURAN DATA & KEAMANAN: '
+        . '1. Gunakan data aktual dari database yang disediakan sebagai sumber kebenaran utama. Jangan mengarang data di luar database. '
+        . '2. Jika pengguna menanyakan angka atau statistik, sebutkan angka persis dari data database. '
+        . '3. Jika pengguna menanyakan laporan tertentu, sebutkan ID, judul, kategori, prioritas, status, lokasi, petugas penanggung jawab, dan catatan hasil perbaikan dalam format poin sederhana. '
+        . '4. Jangan pernah membocorkan password atau data sensitif. '
+        . '5. Jika pertanyaan di luar aplikasi LaporFasilitas, jawab secara ramah dalam teks polos bahwa kamu adalah asisten khusus LaporFasilitas. '
+        . 'IDENTITAS: Nama kamu adalah "Asisten AI LaporFasilitas". Jika ditanya siapa kamu, apa itu chatbot ini, atau apa yang bisa kamu lakukan, perkenalkan dirimu dengan nama tersebut dan jelaskan bahwa kamu membantu penggunaan aplikasi: cara membuat laporan, kategori fasilitas, status laporan, proses verifikasi, penugasan petugas, perbaikan, dan fitur aplikasi. '
+        . 'RUANG LINGKUP: kamu HANYA membantu hal yang berkaitan dengan aplikasi LaporFasilitas. '
+        . 'LARANGAN: (1) Jangan membuat, menulis, menjelaskan, atau debugging kode program dalam bahasa apa pun. Jika diminta, jawab persis: "Maaf, saya adalah asisten AI khusus LaporFasilitas. Saya tidak dapat membantu membuat atau menjelaskan kode program. Saya hanya dapat membantu mengenai penggunaan dan fitur aplikasi LaporFasilitas." '
+        . '(2) Jangan membantu hacking, bypass keamanan, atau akses tidak sah dalam bentuk apa pun. '
+        . '(3) Jangan mengarang nomor laporan, status laporan, nama pengguna, nama petugas, atau data lain; jangan mengklaim telah melakukan tindakan yang tidak ada di data. '
+        . '(4) Jangan ungkap data laporan milik pengguna lain; patuhi role: masyarakat hanya laporannya sendiri, petugas hanya tugasnya, admin sesuai authorization. '
+        . 'Jika pertanyaan benar-benar di luar aplikasi LaporFasilitas, jawab persis: "Maaf, saya hanya dapat membantu mengenai aplikasi LaporFasilitas, seperti pelaporan fasilitas umum rusak, status laporan, proses perbaikan, dan fitur yang tersedia di aplikasi." ';
+
+    public const STATUS_HELP = [
+        'Menunggu Verifikasi' => 'Laporan sudah diterima sistem dan sedang menunggu pemeriksaan/validasi oleh Admin.',
+        'Diverifikasi'        => 'Laporan sudah diperiksa Admin dan dinyatakan valid. Tahap berikutnya adalah penugasan ke petugas.',
+        'Ditugaskan'          => 'Laporan sudah diberikan kepada petugas tertentu, namun petugas belum memulai pengerjaan fisik di lapangan.',
+        'Sedang Diperbaiki'   => 'Petugas telah berada di lokasi dan proses pengerjaan perbaikan fasilitas sedang berlangsung.',
+        'Selesai'             => 'Pekerjaan perbaikan telah selesai 100% dan dilengkapi dengan catatan serta foto bukti hasil kerja.',
+        'Ditolak'             => 'Laporan ditolak oleh Admin (misal karena duplikat, informasi tidak jelas, atau di luar wewenang).',
+    ];
+
+    /**
+     * Membaca dan mengumpulkan seluruh statistik serta rekaman data yang relevan dari database.
+     */
+    public function buildDatabaseContext(?array $user, string $message): string {
+        $db = Database::getConnection();
+        if (!$db) {
+            return "Koneksi database sedang tidak tersedia.";
+        }
+
+        $role = $user['role'] ?? 'tamu';
+        $userId = (int)($user['id'] ?? 0);
+        $userName = $user['name'] ?? 'Tamu (Belum Login)';
+
+        // 1. STATISTIK GLOBAL DARI DATABASE
+        $totalReports = (int)$db->query("SELECT COUNT(*) FROM reports")->fetchColumn();
+        
+        $statusStmt = $db->query("SELECT status, COUNT(*) as cnt FROM reports GROUP BY status");
+        $statusCounts = $statusStmt ? $statusStmt->fetchAll(PDO::FETCH_KEY_PAIR) : [];
+
+        $catStmt = $db->query("SELECT facility_category, COUNT(*) as cnt FROM reports WHERE facility_category IS NOT NULL GROUP BY facility_category");
+        $catCounts = $catStmt ? $catStmt->fetchAll(PDO::FETCH_KEY_PAIR) : [];
+
+        $prioStmt = $db->query("SELECT priority, COUNT(*) as cnt FROM reports WHERE priority IS NOT NULL GROUP BY priority");
+        $prioCounts = $prioStmt ? $prioStmt->fetchAll(PDO::FETCH_KEY_PAIR) : [];
+
+        // Daftar Petugas
+        $officerStmt = $db->query("
+            SELECT o.id, u.name, o.service_area, o.phone,
+                   (SELECT COUNT(*) FROM assignments a WHERE a.officer_id = o.id AND a.status != 'Selesai') as active_tasks
+            FROM officers o 
+            JOIN users u ON o.user_id = u.id
+        ");
+        $officers = $officerStmt ? $officerStmt->fetchAll(PDO::FETCH_ASSOC) : [];
+
+        // 2. DETEKSI ID LAPORAN SPESIFIK DALAM PESAN PENGGUNA
+        $wantedId = null;
+        if (preg_match('/lpf[\s\-_]*0*(\d{1,6})/i', $message, $m)) {
+            $wantedId = (int)$m[1];
+        } elseif (preg_match('/(?:laporan|tiket|id)[^\d]{0,8}(\d{1,6})/i', $message, $m)) {
+            $wantedId = (int)$m[1];
+        } elseif (preg_match('/#\s*(\d{1,6})/', $message, $m)) {
+            $wantedId = (int)$m[1];
+        }
+
+        // 3. AMBIL DATA LAPORAN SECARA SPESIFIK ATAU MENYELURUH
+        // Detail laporan spesifik hanya dimasukkan jika user berhak melihatnya (anti-bocor).
+        $specificReportData = null;
+        if ($wantedId !== null) {
+            $candidate = $this->getFullReportDetail($wantedId);
+            if ($candidate !== null && $this->canUserViewReport($candidate, $user)) {
+                $specificReportData = $candidate;
+            }
+        }
+
+        // Ambil laporan terkait query pencarian kata kunci jika ada
+        $keywordReports = $this->searchReportsByKeywords($message, $user);
+
+        // Batasi hasil pencarian sesuai hak akses role (anti-bocor data user lain)
+        if ($role === 'masyarakat' && $userId > 0) {
+            $keywordReports = array_values(array_filter($keywordReports, fn($kr) => (int)($kr['user_id'] ?? 0) === $userId));
+        } elseif ($role === 'petugas' && $userId > 0) {
+            $allowedIds = [];
+            $scopeOfficer = Officer::findByUserId($userId);
+            if ($scopeOfficer) {
+                foreach (Officer::assignedReports((int)$scopeOfficer['id']) as $t) {
+                    $allowedIds[(int)($t['id'] ?? 0)] = true;
+                }
+            }
+            $keywordReports = array_values(array_filter($keywordReports, fn($kr) => isset($allowedIds[(int)($kr['id'] ?? 0)])));
+        } elseif ($role !== 'admin') {
+            $keywordReports = []; // tamu: tidak menerima data laporan milik siapa pun
+        }
+
+        // Ambil laporan dalam scope user
+        $userScopeReports = [];
+        if ($role === 'masyarakat' && $userId > 0) {
+            $userScopeReports = Report::getByUser($userId);
+        } elseif ($role === 'petugas' && $userId > 0) {
+            $officer = Officer::findByUserId($userId);
+            if ($officer) {
+                $userScopeReports = Officer::assignedReports((int)$officer['id']);
+            }
+        } elseif ($role === 'admin') {
+            $userScopeReports = Report::getAll(['limit' => 10]);
+        }
+
+        // 4. SUSUN STRUKTUR KONTEKS PENGETAHUAN DATABASE
+        $lines = [];
+        $lines[] = "=== RINGKASAN DATABASE REAL-TIME LAPORFASILITAS ===";
+        $lines[] = "Pengguna yang bertanya: Nama=\"$userName\", Role=\"$role\", ID=$userId";
+        $lines[] = "Metrik Utama Sistem:";
+        $lines[] = "- Total Seluruh Laporan di Database: $totalReports";
+        $lines[] = "- Distribusi Status: " . json_encode($statusCounts, JSON_UNESCAPED_UNICODE);
+        $lines[] = "- Distribusi Kategori Fasilitas: " . json_encode($catCounts, JSON_UNESCAPED_UNICODE);
+        $lines[] = "- Distribusi Tingkat Prioritas: " . json_encode($prioCounts, JSON_UNESCAPED_UNICODE);
+        
+        // Daftar petugas: nomor kontak hanya untuk admin; petugas melihat profilnya sendiri.
+        if ($role === 'admin') {
+            $lines[] = "\nDaftar Petugas Lapangan Terdaftar (" . count($officers) . " Petugas):";
+            foreach ($officers as $off) {
+                $lines[] = sprintf("- ID #%d: %s | Area: %s | Tugas Aktif: %d | Kontak: %s",
+                    $off['id'], $off['name'], $off['service_area'], (int)$off['active_tasks'], $off['phone']);
+            }
+        } elseif ($role === 'petugas' && $userId > 0) {
+            $mine = Officer::findByUserId($userId);
+            if ($mine !== null) {
+                $lines[] = "\nPetugas yang bertanya: " . $mine['name'] . " | Area: " . $mine['service_area'];
+            }
+        } else {
+            $lines[] = "\nDaftar Petugas Lapangan Terdaftar (" . count($officers) . " Petugas). Rincian kontak hanya tersedia untuk admin.";
+        }
+
+        if ($specificReportData) {
+            $lines[] = "\n=== DATA RINCI LAPORAN SPESIFIK YANG DITANYAKAN (#{$specificReportData['id']}) ===";
+            $lines[] = "Kode Tiket: LPF-" . str_pad((string)$specificReportData['id'], 5, '0', STR_PAD_LEFT);
+            $lines[] = "Judul: " . $specificReportData['title'];
+            $lines[] = "Kategori: " . ($specificReportData['facility_category'] ?? '-');
+            $lines[] = "Jenis Kerusakan: " . ($specificReportData['damage_type'] ?? '-');
+            $lines[] = "Tingkat Prioritas: " . ($specificReportData['priority'] ?? 'Belum ditentukan');
+            $lines[] = "Status Terkini: " . $specificReportData['status'];
+            $lines[] = "Alamat / Lokasi: " . $specificReportData['address'];
+            $lines[] = "Koordinat GPS: Latitude " . $specificReportData['latitude'] . ", Longitude " . $specificReportData['longitude'];
+            $lines[] = "Deskripsi: " . $specificReportData['description'];
+            $lines[] = "Pelapor: " . ($specificReportData['reporter_name'] ?? 'Warga');
+            $lines[] = "Tanggal Lapor: " . $specificReportData['created_at'];
+            if (!empty($specificReportData['officer_name'])) {
+                $lines[] = "Petugas Ditugaskan: " . $specificReportData['officer_name'] . " (" . ($specificReportData['officer_service_area'] ?? '') . ")";
+            }
+            if (!empty($specificReportData['timelines'])) {
+                $lines[] = "Riwayat Timeline:";
+                foreach ($specificReportData['timelines'] as $tl) {
+                    $lines[] = sprintf("  * [%s] (%s): %s", $tl['status'], $tl['created_at'], $tl['note'] ?? '-');
+                }
+            }
+            if (!empty($specificReportData['proofs'])) {
+                $lines[] = "Bukti Penyelesaian Perbaikan:";
+                foreach ($specificReportData['proofs'] as $pr) {
+                    $lines[] = "  * Catatan Petugas: " . ($pr['notes'] ?? 'Perbaikan telah selesai.') . " (Waktu: " . ($pr['created_at'] ?? '-') . ")";
+                }
+            }
+        }
+
+        if (!empty($keywordReports)) {
+            $lines[] = "\n=== HASIL PENCARIAN REKAMAN LAPORAN RELEVAN DARI DATABASE ===";
+            foreach (array_slice($keywordReports, 0, 8) as $kr) {
+                $lines[] = sprintf(
+                    "- [ID #%d | LPF-%05d] Status: %s | Prioritas: %s | Kategori: %s | Judul: \"%s\" | Lokasi: %s | Petugas: %s",
+                    $kr['id'],
+                    $kr['id'],
+                    $kr['status'],
+                    $kr['priority'] ?? '-',
+                    $kr['facility_category'] ?? '-',
+                    $kr['title'],
+                    $kr['address'],
+                    $kr['officer_name'] ?? 'Belum ditugaskan'
+                );
+            }
+        } elseif (!empty($userScopeReports)) {
+            $lines[] = "\n=== REKAMAN LAPORAN DALAM LINGKUP PENGGUNA INI ===";
+            foreach (array_slice($userScopeReports, 0, 8) as $sr) {
+                $rid = $sr['id'] ?? $sr['report_id'] ?? 0;
+                $lines[] = sprintf(
+                    "- [ID #%d | LPF-%05d] Status: %s | Prioritas: %s | Kategori: %s | Judul: \"%s\" | Alamat: %s",
+                    $rid,
+                    $rid,
+                    $sr['status'] ?? $sr['report_status'] ?? '-',
+                    $sr['priority'] ?? $sr['report_priority'] ?? '-',
+                    $sr['facility_category'] ?? '-',
+                    $sr['title'] ?? $sr['report_title'] ?? '-',
+                    $sr['address'] ?? '-'
+                );
+            }
+        }
+
+        return implode("\n", $lines);
+    }
+
+    /**
+     * Mengambil detail lengkap 1 laporan termasuk timeline dan bukti foto.
+     */
+    public function getFullReportDetail(int $reportId): ?array {
+        $report = Report::findById($reportId);
+        if (!$report) return null;
+
+        $report['timelines'] = ReportTimeline::getByReport($reportId);
+        $report['proofs'] = RepairProof::getByReport($reportId);
+        return $report;
+    }
+
+    /**
+     * Mencari rekaman laporan di database berdasarkan kata kunci pertanyaan pengguna.
+     */
+    private function searchReportsByKeywords(string $message, ?array $user): array {
+        $msg = mb_strtolower($message);
+        $filters = [];
+
+        // Deteksi status yang disebut
+        $statusTerms = [
+            'selesai' => 'Selesai',
+            'sedang diperbaiki' => 'Sedang Diperbaiki',
+            'perbaikan' => 'Sedang Diperbaiki',
+            'ditugaskan' => 'Ditugaskan',
+            'diverifikasi' => 'Diverifikasi',
+            'menunggu' => 'Menunggu Verifikasi',
+            'ditolak' => 'Ditolak'
+        ];
+        foreach ($statusTerms as $term => $st) {
+            if (str_contains($msg, $term)) {
+                $filters['status'] = $st;
+                break;
+            }
+        }
+
+        // Deteksi prioritas
+        $priorityTerms = ['kritis' => 'Kritis', 'tinggi' => 'Tinggi', 'sedang' => 'Sedang', 'rendah' => 'Rendah'];
+        foreach ($priorityTerms as $term => $prio) {
+            if (str_contains($msg, $term) && !isset($filters['status'])) {
+                $filters['priority'] = $prio;
+                break;
+            }
+        }
+
+        // Deteksi kategori
+        $catTerms = [
+            'jalan' => 'Jalan',
+            'lampu' => 'Lampu Jalan',
+            'pju' => 'Lampu Jalan',
+            'trotoar' => 'Trotoar',
+            'taman' => 'Taman',
+            'sampah' => 'Tempat Sampah',
+            'saluran' => 'Saluran Air',
+            'drainase' => 'Saluran Air'
+        ];
+        foreach ($catTerms as $term => $cat) {
+            if (str_contains($msg, $term)) {
+                $filters['facility_category'] = $cat;
+                break;
+            }
+        }
+
+        // Deteksi lokasi terkenal
+        $locTerms = ['thamrin', 'sudirman', 'menteng', 'kebayoran', 'gatot subroto', 'komdak', 'radio dalam', 'jakarta pusat', 'jakarta selatan'];
+        foreach ($locTerms as $loc) {
+            if (str_contains($msg, $loc)) {
+                $filters['search'] = $loc;
+                break;
+            }
+        }
+
+        // Jika tidak ada filter khusus, ambil kata bermakna (>= 4 karakter)
+        if (empty($filters)) {
+            $words = array_filter(preg_split('/\s+/', $msg), fn($w) => mb_strlen($w) >= 4 && !in_array($w, ['berapa', 'apakah', 'adakah', 'bagaimana', 'laporan', 'tolong', 'siapa']));
+            if (!empty($words)) {
+                $filters['search'] = reset($words);
+            }
+        }
+
+        if (empty($filters)) {
+            return [];
+        }
+
+        $filters['limit'] = 8;
+        return Report::getAll($filters);
+    }
+
+    /**
+     * Menjawab pertanyaan FAQ / Bantuan operasional langsung dalam plain text.
+     */
+    public function answerFAQ(string $message): ?string {
+        $t = mb_strtolower(trim($message));
+
+        if ($this->matches($t, ['bagaimana cara membuat laporan', 'cara buat laporan', 'cara melapor', 'langkah membuat laporan', 'panduan lapor'])) {
+            return "Untuk membuat laporan kerusakan fasilitas umum:\n\n"
+                . "1. Buka menu Buat Laporan pada navigasi atas.\n"
+                . "2. Unggah foto kerusakan fasilitas yang jelas.\n"
+                . "3. Tentukan titik lokasi atau koordinat pada peta.\n"
+                . "4. Pilih kategori fasilitas yang sesuai.\n"
+                . "5. Tuliskan deskripsi kerusakan dan patokan alamat yang jelas, lalu kirim laporan.\n\n"
+                . "Laporan akan otomatis diverifikasi oleh sistem dan diteruskan ke tim terkait.";
+        }
+
+        if ($this->matches($t, ['apa arti status', 'arti status laporan', 'makna status', 'penjelasan status'])) {
+            $out = "Arti status alur laporan di LaporFasilitas:\n\n";
+            foreach (self::STATUS_HELP as $st => $desc) {
+                $out .= "- " . $st . ": " . $desc . "\n";
+            }
+            $out .= "\nAlur perjalanan laporan: Menunggu Verifikasi -> Diverifikasi -> Ditugaskan -> Sedang Diperbaiki -> Selesai.";
+            return $out;
+        }
+
+        if ($this->matches($t, ['siapa kamu', 'siapakah anda', 'kamu siapa', 'anda siapa', 'apa itu chatbot', 'ini chatbot apa', 'chatbot ini untuk apa'])) {
+            return "Halo! Saya adalah Asisten AI LaporFasilitas. Saya terhubung langsung dengan basis data sistem pelaporan fasilitas publik secara real-time.\n\n"
+                . "Saya dapat membantu Anda:\n"
+                . "- Memeriksa status dan perkembangan laporan fasilitas umum.\n"
+                . "- Menyajikan statistik dan rekapitulasi data kerusakan di kota.\n"
+                . "- Mengetahui petugas yang menangani perbaikan dan area kerjanya.\n"
+                . "- Memberikan panduan penggunaan dan fitur aplikasi LaporFasilitas.";
+        }
+
+        if ($this->matches($t, ['buatkan kode', 'buat kode', 'tulis kode', 'tuliskan kode', 'source code', 'kode program', 'kode php', 'kode javascript', 'coding', 'programming', 'debugging', 'buatkan program', 'contoh program'])) {
+            return "Maaf, saya adalah asisten AI khusus LaporFasilitas. Saya tidak dapat membantu membuat atau menjelaskan kode program. Saya hanya dapat membantu mengenai penggunaan dan fitur aplikasi LaporFasilitas.";
+        }
+
+        return null;
+    }
+
+    /**
+     * Fallback deterministik: Membaca database secara langsung jika AI API tidak merespons.
+     */
+    public function answerDirectFromDatabase(string $message, ?array $user): string {
+        $db = Database::getConnection();
+        if (!$db) {
+            return "Maaf, sistem database sedang tidak dapat diakses. Silakan coba beberapa saat lagi.";
+        }
+
+        $msg = mb_strtolower($message);
+
+        // 1. Cek jika tanya ID spesifik (wajib login + cek hak akses role)
+        if (preg_match('/(?:lpf[\s\-_]*|#\s*)0*(\d{1,6})/i', $message, $m)) {
+            if ($user === null) {
+                return "Silakan login untuk melihat informasi laporan pribadi Anda. Setelah login, buka menu Laporan Saya atau tanyakan lagi di sini.";
+            }
+            $id = (int)$m[1];
+            $r = $this->getFullReportDetail($id);
+            if ($r !== null && !$this->canUserViewReport($r, $user)) {
+                $r = null; // samarkan: pesan sama seperti ID tidak ada (anti-oracle)
+            }
+            if ($r) {
+                $resp = "Informasi Laporan LPF-" . str_pad((string)$id, 5, '0', STR_PAD_LEFT) . ":\n\n"
+                    . "- Judul: " . ($r['title'] ?? '-') . "\n"
+                    . "- Kategori: " . ($r['facility_category'] ?? '-') . "\n"
+                    . "- Status: " . ($r['status'] ?? '-') . "\n"
+                    . "- Prioritas: " . ($r['priority'] ?? '-') . "\n"
+                    . "- Lokasi: " . ($r['address'] ?? '-') . "\n";
+
+                if (!empty($r['officer_name'])) {
+                    $resp .= "- Petugas: " . $r['officer_name'] . " (" . ($r['officer_service_area'] ?? '') . ")\n";
+                }
+                if (!empty($r['proofs'])) {
+                    $resp .= "- Catatan Hasil Perbaikan: " . ($r['proofs'][0]['notes'] ?? 'Selesai dikerjakan.') . "\n";
+                }
+                return trim($resp);
+            }
+            return "Laporan dengan ID " . $id . " tidak ditemukan dalam database.";
+        }
+
+        // 2. Cek jika tanya jumlah pengguna (didahulukan sebelum statistik laporan).
+        // PRIVASI: hanya admin yang boleh melihat data pengguna, termasuk agregat.
+        $isUserQ = $this->matches($msg, ['pengguna', 'pendaftar', 'anggota', 'masyarakat', 'petugas', 'teknisi', 'admin', 'akun', 'user']);
+        $isCountQ = $this->matches($msg, ['berapa', 'total', 'jumlah', 'banyak', 'statistik', 'hitung', 'rekap']);
+        $isReportQ = $this->matches($msg, ['lapor', 'tiket', 'fasilitas', 'kerusakan', 'perbaikan', 'verifikasi']);
+        if ($isUserQ && $isCountQ && !$isReportQ) {
+            if ($user === null) {
+                return "Silakan login terlebih dahulu untuk mengakses informasi tersebut.";
+            }
+            if (($user['role'] ?? '') !== 'admin') {
+                return "Maaf, informasi jumlah pengguna aplikasi hanya dapat diakses oleh admin.";
+            }
+            $totalUsers = (int)$db->query("SELECT COUNT(*) FROM users")->fetchColumn();
+            $roleCounts = $db->query("SELECT role, COUNT(*) FROM users GROUP BY role")->fetchAll(PDO::FETCH_KEY_PAIR);
+
+            $roleParts = [];
+            foreach ($roleCounts as $rl => $c) {
+                $roleParts[] = $c . " " . $rl;
+            }
+
+            return "Berdasarkan data real-time database LaporFasilitas, total pengguna yang terdaftar di aplikasi ini adalah " . $totalUsers . " pengguna.\n\n"
+                . "Rincian per role: " . implode(', ', $roleParts) . ".";
+        }
+
+        // 3. Cek jika tanya total / statistik laporan
+        if ($this->matches($msg, ['berapa', 'total', 'jumlah', 'banyak', 'statistik', 'rekap'])) {
+            $total = (int)$db->query("SELECT COUNT(*) FROM reports")->fetchColumn();
+            $statusCounts = $db->query("SELECT status, COUNT(*) FROM reports GROUP BY status")->fetchAll(PDO::FETCH_KEY_PAIR);
+            
+            $statusParts = [];
+            foreach ($statusCounts as $st => $c) {
+                $statusParts[] = $c . " " . $st;
+            }
+
+            $catCounts = $db->query("SELECT facility_category, COUNT(*) FROM reports WHERE facility_category IS NOT NULL GROUP BY facility_category")->fetchAll(PDO::FETCH_KEY_PAIR);
+            $catParts = [];
+            foreach ($catCounts as $cat => $c) {
+                $catParts[] = $c . " " . $cat;
+            }
+
+            $prioCounts = $db->query("SELECT priority, COUNT(*) FROM reports WHERE priority IS NOT NULL GROUP BY priority")->fetchAll(PDO::FETCH_KEY_PAIR);
+            $prioParts = [];
+            foreach ($prioCounts as $prio => $c) {
+                $prioParts[] = $c . " " . $prio;
+            }
+
+            $resp = "Berdasarkan data real-time database LaporFasilitas, total seluruh laporan yang masuk saat ini adalah " . $total . " laporan.\n\n"
+                . "Rincian laporan:\n"
+                . "- Status: " . implode(', ', $statusParts) . "\n"
+                . "- Kategori: " . implode(', ', $catParts) . "\n"
+                . "- Prioritas: " . implode(', ', $prioParts);
+            return $resp;
+        }
+
+        // 4. Cek jika tanya daftar petugas (nomor kontak hanya untuk admin)
+        if ($this->matches($msg, ['petugas', 'teknisi'])) {
+            $askRole = $user['role'] ?? 'tamu';
+            $askId = (int)($user['id'] ?? 0);
+            if ($askRole === 'admin') {
+                $officers = $db->query("SELECT u.name, o.service_area, o.phone FROM officers o JOIN users u ON o.user_id = u.id")->fetchAll(PDO::FETCH_ASSOC);
+                $resp = "Daftar petugas lapangan terdaftar di database:\n\n";
+                foreach ($officers as $off) {
+                    $resp .= "- " . $off['name'] . ": Area " . $off['service_area'] . " (Kontak: " . $off['phone'] . ")\n";
+                }
+                return trim($resp);
+            }
+            if ($askRole === 'petugas' && $askId > 0) {
+                $mine = Officer::findByUserId($askId);
+                if ($mine !== null) {
+                    return "Profil petugas Anda:\n\n- " . $mine['name'] . ": Area " . $mine['service_area'] . " (Kontak: " . $mine['phone'] . ")";
+                }
+            }
+            if ($user === null) {
+                return "Silakan login untuk melihat informasi laporan pribadi Anda. Setelah login, buka menu Laporan Saya atau tanyakan lagi di sini.";
+            }
+            return "Informasi daftar petugas hanya dapat diakses oleh admin. Nama petugas yang menangani laporan milik Anda tercantum pada detail laporan tersebut.";
+        }
+
+        return "Saya telah membaca database LaporFasilitas. Anda dapat menanyakan nomor laporan (contoh: status laporan 1), kategori fasilitas (contoh: laporan jalan rusak), atau statistik laporan di kota.";
+    }
+
+    /**
+     * Membersihkan teks dari sintaks Markdown agar selalu tampil teks polos (plain text) yang rapi.
+     */
+    public static function cleanPlainText(string $text): string {
+        // Hapus kode blok ``` atau `
+        $text = preg_replace('/```[a-zA-Z]*\n?/', '', $text);
+        $text = str_replace(['```', '`'], '', $text);
+
+        // Hapus header markdown (### Header -> Header)
+        $text = preg_replace('/^#{1,6}\s*(.+)$/m', '$1', $text);
+
+        // Hapus bold & italic (**text** -> text, *text* -> text)
+        $text = preg_replace('/\*\*(.+?)\*\*/', '$1', $text);
+        $text = preg_replace('/(?<=\s|^)\*([^\*\n]+)\*(?=\s|$|[.,!?])/', '$1', $text);
+        $text = str_replace(['**', '*'], '', $text);
+
+        // Konversi markdown table (| Kolom | Detail |) menjadi format poin sederhana
+        if (str_contains($text, '|')) {
+            $lines = explode("\n", $text);
+            $newLines = [];
+            foreach ($lines as $line) {
+                $trimmed = trim($line);
+                if (preg_match('/^\|?\s*[-:]+[-|\s:]*$/', $trimmed)) {
+                    continue;
+                }
+                if (str_starts_with($trimmed, '|') && str_ends_with($trimmed, '|')) {
+                    $cols = array_map('trim', explode('|', trim($trimmed, '|')));
+                    $cols = array_values(array_filter($cols, fn($c) => $c !== ''));
+                    if (count($cols) >= 2) {
+                        $newLines[] = '- ' . implode(': ', $cols);
+                    } else if (count($cols) === 1) {
+                        $newLines[] = '- ' . reset($cols);
+                    }
+                } else {
+                    $newLines[] = $line;
+                }
+            }
+            $text = implode("\n", $newLines);
+        }
+
+        // Rapikan spasi dan baris baru
+        $text = preg_replace("/\n{3,}/", "\n\n", $text);
+        return trim($text);
+    }
+
+    private function matches(string $text, array $keywords): bool {
+        foreach ($keywords as $k) {
+            if (str_contains($text, $k)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Hak akses laporan per role (mirror AuthMiddleware::canAccessReport, aman untuk API):
+     * admin = semua; masyarakat = miliknya sendiri; petugas = yang ditugaskan kepadanya.
+     */
+    private function canUserViewReport(array $report, ?array $user): bool {
+        if ($user === null) return false;
+        $role = $user['role'] ?? '';
+        if ($role === 'admin') return true;
+        $uid = (int)($user['id'] ?? 0);
+        if ($uid <= 0) return false;
+        if ($role === 'masyarakat') {
+            return (int)($report['user_id'] ?? 0) === $uid;
+        }
+        if ($role === 'petugas') {
+            $officer = Officer::findByUserId($uid);
+            if ($officer === null) return false;
+            foreach (Assignment::getByReport((int)($report['id'] ?? 0)) as $a) {
+                if ((int)($a['officer_id'] ?? 0) === (int)$officer['id']) return true;
+            }
+            return false;
+        }
+        return false;
+    }
+}
