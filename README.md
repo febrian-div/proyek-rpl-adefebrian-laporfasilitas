@@ -16,7 +16,7 @@
 
 ## 🎬 Tautan Video Demonstrasi
 
-- **Video Final Demo:** [MASUKKAN LINK VIDEO DEMO]
+- **Video Final Demo:** https://youtu.be/HtUqgSr17Rw?si=tU2ArdxydvSBcHiF
 
 ---
 
