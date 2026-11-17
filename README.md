@@ -8,7 +8,7 @@
 
 - **Nama Mahasiswa:** Ade Febrian
 - **NIM:** 41257081
-- **Kelompok:** [MASUKKAN NAMA/NOMOR KELOMPOK]
+- **Kelompok:** RPL-01
 - **Tema:** Smart City & Civic Technology
 - **Topik Kelompok:** Sistem Pelaporan dan Monitoring Fasilitas Umum Berbasis Artificial Intelligence
 
